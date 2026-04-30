@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "stats": {
+    "source_files_scanned": 1,
+    "symbol_count": 3
+  },
+  "symbols": [
+    {
+      "class_name": "MainActivity",
+      "confidence": "regex",
+      "end_line": 10,
+      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "function_name": "onCreate",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "savedInstanceState: Bundle?",
+      "start_line": 7,
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "class_name": "MainActivity",
+      "confidence": "regex",
+      "end_line": 14,
+      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "function_name": "openSettings",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "",
+      "start_line": 12,
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
+    },
+    {
+      "class_name": "MainActivity",
+      "confidence": "regex",
+      "end_line": 18,
+      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "function_name": "showSettings",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "",
+      "start_line": 16,
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.showSettings/0"
+    }
+  ]
+}

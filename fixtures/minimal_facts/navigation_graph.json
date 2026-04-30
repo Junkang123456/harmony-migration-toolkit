@@ -1,0 +1,59 @@
+{
+  "nodes": {
+    "MainActivity": {
+      "name": "MainActivity",
+      "layout": "activity_main",
+      "type": "activity",
+      "navigates_to": ["SettingsFragment"],
+      "navigated_from": [],
+      "edges_out": 1,
+      "edges_in": 0
+    },
+    "SettingsFragment": {
+      "name": "SettingsFragment",
+      "layout": "fragment_settings",
+      "type": "dialog",
+      "navigates_to": [],
+      "navigated_from": ["MainActivity"],
+      "edges_out": 0,
+      "edges_in": 1
+    },
+    "MainActivity$onCreate$1": {
+      "name": "MainActivity$onCreate$1",
+      "layout": "activity_main",
+      "type": "dialog",
+      "navigates_to": [],
+      "navigated_from": ["MainActivity"],
+      "edges_out": 0,
+      "edges_in": 1
+    }
+  },
+  "edges": [
+    {
+      "from": "MainActivity",
+      "line": 12,
+      "to": "SettingsFragment",
+      "to_layout": "fragment_settings",
+      "trigger": "fn: openSettings",
+      "type": "commons_dialog",
+      "via": "Dialog()"
+    }
+  ],
+  "stats": {
+    "total_nodes": 3,
+    "total_edges": 0,
+    "activity_nodes": 1,
+    "dialog_nodes": 2,
+    "external_nodes": 0,
+    "by_type": {
+      "activity": 1,
+      "dialog": 2,
+      "commons_dialog": 0
+    }
+  },
+  "class_layouts": {
+    "MainActivity": "activity_main",
+    "SettingsFragment": "fragment_settings",
+    "MainActivity$onCreate$1": "activity_main"
+  }
+}

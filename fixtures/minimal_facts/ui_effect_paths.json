@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "path_count": 1,
+  "paths": [
+    {
+      "action_token": "openSettings",
+      "effect_kind": "dialog",
+      "label": "Open settings",
+      "line": 12,
+      "path_display_legacy": "Main > Settings",
+      "path_display_report": "Main \u203a Settings",
+      "path_id": "ep:minimal-settings",
+      "source_file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "target": "SettingsFragment"
+    }
+  ]
+}

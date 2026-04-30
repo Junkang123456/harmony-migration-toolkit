@@ -1,0 +1,8 @@
+out/
+out_*/
+out_smoke/
+out_fixture_test/
+pytest_minimal/
+__pycache__/
+*.pyc
+.pytest_cache/

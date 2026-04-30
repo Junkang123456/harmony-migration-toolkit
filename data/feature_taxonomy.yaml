@@ -1,0 +1,52 @@
+# Version must match taxonomy_version emitted in feature_tree.v1.json
+# First matching rule wins (order is significant).
+version: "1.0"
+features:
+  - id: settings.general
+    label: Settings
+    match:
+      class_name_regex: "(?i)(Setting|Settings).*"
+  - id: auth.account
+    label: Account and authentication
+    match:
+      class_name_regex: "(?i).*(Login|SignIn|Signin|Auth|Account|Profile|User).*"
+  - id: bookmark.manage
+    label: Bookmarks
+    match:
+      class_name_regex: "(?i)Bookmark.*"
+  - id: search.find
+    label: Search
+    match:
+      class_name_regex: "(?i).*(Search|Find).*"
+  - id: download.manage
+    label: Downloads
+    match:
+      class_name_regex: "(?i).*(Download|Downloads).*"
+  - id: history.manage
+    label: History
+    match:
+      class_name_regex: "(?i).*(History|Recent).*"
+  - id: media.playback
+    label: Media
+    match:
+      class_name_regex: "(?i).*(Media|Audio|Video|Player|Camera|Photo|Gallery).*"
+  - id: notification.manage
+    label: Notifications
+    match:
+      class_name_regex: "(?i).*(Notification|Push).*"
+  - id: commerce.checkout
+    label: Commerce
+    match:
+      class_name_regex: "(?i).*(Cart|Checkout|Order|Payment|Pay|Product).*"
+  - id: map.location
+    label: Maps and location
+    match:
+      class_name_regex: "(?i).*(Map|Location|Geo|Address).*"
+  - id: browser.core
+    label: Browser
+    match:
+      class_name_regex: "(?i)Browser.*"
+  - id: dialog.generic
+    label: Dialogs
+    match:
+      class_name_regex: "(?i).*Dialog(Fragment)?$"

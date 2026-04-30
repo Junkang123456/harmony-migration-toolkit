@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "calls": [
+    {
+      "callee_name": "openSettings",
+      "callsite_file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "callsite_line": 9,
+      "confidence": "regex_same_class",
+      "from_symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1",
+      "to_symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
+    },
+    {
+      "callee_name": "showSettings",
+      "callsite_file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "callsite_line": 13,
+      "confidence": "regex_same_class",
+      "from_symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0",
+      "to_symbol_id": "fn:com.verifyfix.minimal.MainActivity.showSettings/0"
+    }
+  ],
+  "stats": {
+    "call_count": 2,
+    "symbol_count": 3,
+    "unresolved_call_count": 1
+  },
+  "symbols": [
+    {
+      "class_name": "MainActivity",
+      "confidence": "regex",
+      "end_line": 10,
+      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "function_name": "onCreate",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "savedInstanceState: Bundle?",
+      "start_line": 7,
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "class_name": "MainActivity",
+      "confidence": "regex",
+      "end_line": 14,
+      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "function_name": "openSettings",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "",
+      "start_line": 12,
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
+    },
+    {
+      "class_name": "MainActivity",
+      "confidence": "regex",
+      "end_line": 18,
+      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "function_name": "showSettings",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "",
+      "start_line": 16,
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.showSettings/0"
+    }
+  ],
+  "unresolved_calls": [
+    {
+      "callee_name": "setContentView",
+      "callsite_file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "callsite_line": 17,
+      "from_symbol_id": "fn:com.verifyfix.minimal.MainActivity.showSettings/0",
+      "reason": "unresolved"
+    }
+  ]
+}

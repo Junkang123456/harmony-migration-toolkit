@@ -1,0 +1,13 @@
+{
+  "static_elements": [],
+  "dynamic_gap": [],
+  "coverage_stats": {
+    "xml_elements_total": 0,
+    "xml_interactive": 0,
+    "xml_with_behavior_bound": 0,
+    "xml_conditional_visibility": 0,
+    "dynamic_gap_total": 0,
+    "dynamic_gap_pure_new": 0,
+    "unmatched": 0
+  }
+}
