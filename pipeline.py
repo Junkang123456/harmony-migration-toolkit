@@ -102,7 +102,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-spec-tools",
         action="store_true",
-        help="Reuse existing bundled_spec_tools/output/ without re-running main.py",
+        help="Debug/cache mode: reuse SPEC_TOOLS_ROOT/output without re-running the bundled scanner",
     )
     parser.add_argument(
         "--facts-source",

@@ -126,6 +126,7 @@ def run_stage0(
     spec_main = spec_tools / "main.py"
     spec_output = spec_tools / "output"
     facts_dir = out_dir / "0_android_facts"
+    scan_tmp = out_dir / "0_android_facts.__scan_tmp"
 
     if facts_source is not None:
         src = facts_source.resolve()
@@ -140,9 +141,13 @@ def run_stage0(
                 f"Bundled spec-tools main.py not found: {spec_main}. "
                 "Restore harmony-migration-toolkit/bundled_spec_tools or pass --spec-tools-root."
             )
-        cmd = [sys.executable, str(spec_main), str(android_root)]
+        if scan_tmp.exists():
+            shutil.rmtree(scan_tmp)
+        cmd = [sys.executable, str(spec_main), str(android_root), "--out", str(scan_tmp)]
         subprocess.run(cmd, cwd=str(spec_tools), check=True)
-        _copy_from_spec_output(spec_output, facts_dir)
+        _copy_from_spec_output(scan_tmp, facts_dir)
+        if scan_tmp.exists():
+            shutil.rmtree(scan_tmp)
     else:
         if not spec_output.is_dir():
             raise FileNotFoundError(

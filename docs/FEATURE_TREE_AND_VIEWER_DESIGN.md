@@ -44,7 +44,7 @@
 | 路径 | 说明 |
 |------|------|
 | `agent_bundle.v1.json` | **最终交付**：摘要 + 大纲 + 中间件清单 + `agent_hints`（见 §2.1；Schema 见 §11） |
-| `intermediate/0_android_facts/` | **`bundled_spec_tools/output/` 整目录镜像**（不限定文件名）+ 路径归一化 + 根目录 `manifest.json`（阶段清单） |
+| `intermediate/0_android_facts/` | Stage 0 每次运行的隔离 scan 输出完整镜像（不限定文件名）+ 路径归一化 + 根目录 `manifest.json`（阶段清单） |
 | `intermediate/1_android_facts/android_facts.v1.json` | Android 摘要 IR |
 | `intermediate/2_framework_map/framework_map.v1.json` | 框架映射与 `gap_items`（规则表 [`data/framework_map/rules.yaml`](../data/framework_map/rules.yaml)） |
 | `intermediate/3_harmony_arch/harmony_arch.v1.json` | Harmony 模块 / Ability / route 占位 |
@@ -278,7 +278,7 @@ flowchart TB
 - `--stages 5,7` — 在已有 `0_android_facts`、`1_android_facts` 下刷新功能树与 bundle（Stage 7 仍会校验 Stage 2/3 产物是否存在；完整刷新通常带 `2,3`）。
 - `--taxonomy PATH` / `--taxonomy-overlay PATH`（可重复）— Stage 5 可选显式功能域规则（**无默认 bundled YAML**）。
 - `--facts-source DIR` — 拷贝预置 facts 到 `0_android_facts`，跳过 Stage 0 扫描（测试与离线场景）。
-- `--skip-spec-tools` — 复用已有 `bundled_spec_tools/output/`（或 `--spec-tools-root` 指向目录下的 `output/`）。
+- `--skip-spec-tools` — 显式复用已有 `bundled_spec_tools/output/`（或 `--spec-tools-root` 指向目录下的 `output/`），仅建议调试/缓存场景使用。
 - `--emit-scaffold-files` — Stage 4 写入 `4_scaffold/` 而非仅 stdout。
 - `--stages ...,6` — 导出 `<out>/viewer/`（依赖 toolkit [`viewer/`](../viewer/) 目录完整）。
 
@@ -401,11 +401,12 @@ viewer/
 | `feature_tree.v1.schema.json` | Stage 5（含 `function_symbol`、`calls`、`enters` 等） |
 | `agent_bundle.v1.schema.json` | Stage 7 |
 
-`intermediate_manifest` 当前为每个文件记录 **`bytes`**（未写入 sha256；若需完整性校验可在后续版本扩展）。
+`intermediate_manifest` 当前为低基数文件记录 **`bytes`**，并省略 `0_android_facts/specs/`、`app_model/features/`、`app_model/screens/`、`app_model/paths/` 等高基数目录（见 `omitted_by_prefix`）。完整 Stage 0 JSON 清单看 `0_android_facts/manifest.json`，其中包含各文件的 `sha256` 与 `bytes`。
 
 ### 11.2 测试
 
 - `fixtures/minimal_android` + `fixtures/minimal_facts`：最小端到端。
+- 覆盖真实 bundled Stage 0 路径：不使用 `--facts-source`，验证隔离 scan 输出不会复制共享 `bundled_spec_tools/output/` 的旧文件。
 - `pytest tests/test_pipeline.py`：全默认 stage 不含 6 时 **不生成** `viewer/`；断言 bundle 内 **`feature_tree` 键不存在**（全图仅经 artifact 引用）。
 - Stage 6 测试需在 **viewer 资源齐全** 的检出环境中运行；否则拷贝步骤可能失败。
 

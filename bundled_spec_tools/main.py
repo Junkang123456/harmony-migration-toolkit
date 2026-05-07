@@ -3,9 +3,11 @@ main.py
 Static ground truth 生成的入口脚本。
 用法：python main.py <android_project_root>
 """
-import sys
+import argparse
 import json
 import re
+import shutil
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -64,9 +66,21 @@ def _print_spec_report(flat: list, dag: dict) -> None:
 
 
 def main():
-    project_root = sys.argv[1] if len(sys.argv) > 1 else "."
-    out_dir = Path(__file__).parent / "output"
-    out_dir.mkdir(exist_ok=True)
+    parser = argparse.ArgumentParser(description="Generate static Android facts for harmony-migration-toolkit")
+    parser.add_argument("android_project_root", nargs="?", default=".", help="Android project root")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory (default: bundled_spec_tools/output)",
+    )
+    args = parser.parse_args()
+
+    project_root = args.android_project_root
+    out_dir = (args.out or (Path(__file__).parent / "output")).resolve()
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     dep_roots = resolve_dependencies(project_root)
     print(f"Project: {project_root}")

@@ -89,6 +89,39 @@ def test_pipeline_minimal_fixture_schema():
     assert not (out / "viewer").exists()
 
 
+def test_stage0_bundled_scanner_uses_isolated_output(tmp_path: Path):
+    out = tmp_path / "stage0"
+    shared_output = ROOT / "bundled_spec_tools" / "output"
+    stale = shared_output / "app_model" / "features" / "stale_from_previous_project.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"stale": true}\n', encoding="utf-8")
+
+    try:
+        run_pipeline(
+            [
+                "--android-root",
+                str(ROOT / "fixtures" / "minimal_android"),
+                "--out",
+                str(out),
+                "--stages",
+                "0",
+            ]
+        )
+
+        facts = out / "intermediate" / "0_android_facts"
+        assert (facts / "static_xml.json").is_file()
+        assert (facts / "navigation_graph.json").is_file()
+        assert (facts / "function_symbols.json").is_file()
+        assert (facts / "call_graph.json").is_file()
+        assert (facts / "app_model" / "index.json").is_file()
+        assert (facts / "manifest.json").is_file()
+        assert not (facts / "app_model" / "features" / stale.name).exists()
+        assert not (out / "intermediate" / "0_android_facts.__scan_tmp").exists()
+    finally:
+        if stale.exists():
+            stale.unlink()
+
+
 def test_pipeline_stage4_emit_scaffold_files(tmp_path: Path):
     out = tmp_path / "scaffold"
     run_pipeline(

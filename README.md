@@ -43,7 +43,7 @@ python pipeline.py --android-root /path/to/android/project --out /path/to/output
 
 | Stage | Output |
 |-------|--------|
-| 0 | `<output>/intermediate/0_android_facts/` — **full mirror** of `bundled_spec_tools/output/` + normalized paths + `manifest.json` |
+| 0 | `<output>/intermediate/0_android_facts/` — isolated full scan output mirror + normalized paths + `manifest.json` |
 | 1 | `<output>/intermediate/1_android_facts/android_facts.v1.json` |
 | 2 | `<output>/intermediate/2_framework_map/framework_map.v1.json` |
 | 3 | `<output>/intermediate/3_harmony_arch/harmony_arch.v1.json` |
@@ -59,7 +59,7 @@ The default output directory is `<android-root>/harmony_migration_out`. The defa
 Most users should use the full run above. These flags are mainly for tests, debugging, or rerunning part of an existing output:
 
 ```bash
-# Reuse existing bundled_spec_tools/output without rescanning the Android project
+# Debug/cache mode: reuse an existing bundled_spec_tools/output without rescanning
 python pipeline.py --android-root /path/to/android/project --skip-spec-tools
 
 # Run selected stages only
@@ -68,6 +68,8 @@ python pipeline.py --android-root /path/to/android/project --stages 5,7
 # Generate the optional HTML debug viewer
 python pipeline.py --android-root /path/to/android/project --stages 0,1,2,3,5,6
 ```
+
+By default, Stage 0 writes the bundled scanner output to a per-run temporary directory under `<output>/intermediate/`, then mirrors it into `0_android_facts/`. The shared `bundled_spec_tools/output/` directory is only used when running `bundled_spec_tools/main.py` standalone or when explicitly passing `--skip-spec-tools`.
 
 ### Feature taxonomy
 
