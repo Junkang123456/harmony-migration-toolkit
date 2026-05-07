@@ -44,7 +44,7 @@
 | 路径 | 说明 |
 |------|------|
 | `agent_bundle.v1.json` | **最终交付**：摘要 + 大纲 + 中间件清单 + `agent_hints`（见 §2.1；Schema 见 §11） |
-| `intermediate/0_android_facts/` | `bundled_spec_tools/output/` 拷贝 + `manifest.json` + 路径归一化 |
+| `intermediate/0_android_facts/` | **`bundled_spec_tools/output/` 整目录镜像**（不限定文件名）+ 路径归一化 + 根目录 `manifest.json`（阶段清单） |
 | `intermediate/1_android_facts/android_facts.v1.json` | Android 摘要 IR |
 | `intermediate/2_framework_map/framework_map.v1.json` | 框架映射与 `gap_items`（规则表 [`data/framework_map/rules.yaml`](../data/framework_map/rules.yaml)） |
 | `intermediate/3_harmony_arch/harmony_arch.v1.json` | Harmony 模块 / Ability / route 占位 |

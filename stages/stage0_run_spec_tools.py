@@ -96,39 +96,17 @@ def default_spec_tools_root() -> Path:
 
 
 def _copy_from_spec_output(spec_output: Path, facts_dir: Path) -> None:
-    """Populate facts_dir from bundled spec-tools `output/` (does not run main.py)."""
+    """Mirror bundled spec-tools ``output/`` into ``facts_dir`` (full tree, no filename whitelist).
+
+    Static scan may add new JSON or subdirectories; copying everything avoids silently dropping files.
+    """
+    if not spec_output.is_dir():
+        raise FileNotFoundError(
+            f"Spec-tools output directory missing or not a directory: {spec_output}"
+        )
     if facts_dir.exists():
         shutil.rmtree(facts_dir)
-    facts_dir.mkdir(parents=True, exist_ok=True)
-    dest_specs = facts_dir / "specs"
-    for name in (
-        "static_xml.json",
-        "source_findings.json",
-        "function_symbols.json",
-        "call_graph.json",
-        "ground_truth.json",
-        "navigation_graph.json",
-        "navigation_candidates.json",
-        "ui_dag.json",
-        "ui_paths.json",
-        "ui_paths_legacy.json",
-        "ui_paths_report.json",
-        "ui_paths_coverage_report.json",
-        "ui_effect_paths.json",
-        "ui_paths_enumerated.json",
-    ):
-        src = spec_output / name
-        if src.is_file():
-            shutil.copy2(src, facts_dir / name)
-    src_specs = spec_output / "specs"
-    if src_specs.is_dir():
-        shutil.copytree(src_specs, dest_specs)
-    src_app_model = spec_output / "app_model"
-    if src_app_model.is_dir():
-        shutil.copytree(src_app_model, facts_dir / "app_model")
-    gap_src = spec_output / "gap_analysis.json"
-    if gap_src.is_file():
-        shutil.copy2(gap_src, facts_dir / "gap_analysis.json")
+    shutil.copytree(spec_output, facts_dir, symlinks=False)
 
 
 def run_stage0(

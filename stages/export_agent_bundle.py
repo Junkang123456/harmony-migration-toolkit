@@ -14,15 +14,41 @@ def _load_if_present(path: Path) -> Any:
 
 def _intermediate_manifest(intermediate_dir: Path) -> dict[str, Any]:
     artifacts: dict[str, Any] = {}
+    omitted_by_prefix: dict[str, int] = {}
+    total_artifact_count = 0
+
+    # High-cardinality trees add little value in the bundle itself and can dominate
+    # LLM context. Keep them out of the inline artifact index and expose omission stats.
+    noisy_prefixes = (
+        "0_android_facts/specs/",
+        "0_android_facts/app_model/features/",
+        "0_android_facts/app_model/screens/",
+        "0_android_facts/app_model/paths/",
+    )
+
+    def _omit_prefix(rel: str) -> str | None:
+        for prefix in noisy_prefixes:
+            if rel.startswith(prefix):
+                return prefix
+        return None
+
     if intermediate_dir.is_dir():
         for p in sorted(x for x in intermediate_dir.rglob("*") if x.is_file()):
+            total_artifact_count += 1
             rel = p.relative_to(intermediate_dir).as_posix()
+            omitted_prefix = _omit_prefix(rel)
+            if omitted_prefix:
+                omitted_by_prefix[omitted_prefix] = omitted_by_prefix.get(omitted_prefix, 0) + 1
+                continue
             artifacts[rel] = {
                 "bytes": p.stat().st_size,
             }
     return {
         "root": intermediate_dir.as_posix(),
-        "artifact_count": len(artifacts),
+        "artifact_count": total_artifact_count,
+        "included_artifact_count": len(artifacts),
+        "omitted_artifact_count": total_artifact_count - len(artifacts),
+        "omitted_by_prefix": omitted_by_prefix,
         "artifacts": artifacts,
     }
 
@@ -162,6 +188,7 @@ def export_agent_bundle(
         },
         "agent_hints": {
             "primary_graph": "Open outline.artifacts.feature_tree.path for the full canonical migration graph.",
+            "stage0_inventory": "Open outline.artifacts.stage0_manifest.path — sha256/bytes index of each *.json under 0_android_facts/ produced by the static scan (the manifest file itself is written last and is not self-listed).",
             "source_evidence": "Open outline.artifacts.evidence.path and feature_tree node evidence for deterministic source anchors.",
             "verification": "Treat verification.status=warn as usable with listed issues; unresolved calls indicate static-analysis limits.",
             "gaps": "Use outline.migration.gap_count first, then open the framework map artifact for full gap details.",
@@ -196,6 +223,7 @@ def export_agent_bundle(
                 "report_ref": _artifact_ref("5_feature_tree/taxonomy_report.json", intermediate_manifest),
             },
             "artifacts": {
+                "stage0_manifest": _artifact_ref("0_android_facts/manifest.json", intermediate_manifest),
                 "feature_tree": _artifact_ref("5_feature_tree/feature_tree.v1.json", intermediate_manifest),
                 "evidence": _artifact_ref("5_feature_tree/feature_spec_evidence.json", intermediate_manifest),
                 "verification": _artifact_ref("5_feature_tree/verify_report.json", intermediate_manifest),

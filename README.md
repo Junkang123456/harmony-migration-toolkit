@@ -14,7 +14,6 @@ End-to-end design for the planned **feature tree IR** (screen / UI / behavior / 
 
 - Python 3.10+
 - `pip install -r requirements.txt`
-- Stage 0 (default): uses `harmony-migration-toolkit/bundled_spec_tools/`; pass `--spec-tools-root` only if you maintain a fork elsewhere.
 
 ## Usage
 
@@ -44,7 +43,7 @@ python pipeline.py --android-root /path/to/android/project --out /path/to/output
 
 | Stage | Output |
 |-------|--------|
-| 0 | `<output>/intermediate/0_android_facts/` — copy of `bundled_spec_tools/output/` + normalized paths + `manifest.json` |
+| 0 | `<output>/intermediate/0_android_facts/` — **full mirror** of `bundled_spec_tools/output/` + normalized paths + `manifest.json` |
 | 1 | `<output>/intermediate/1_android_facts/android_facts.v1.json` |
 | 2 | `<output>/intermediate/2_framework_map/framework_map.v1.json` |
 | 3 | `<output>/intermediate/3_harmony_arch/harmony_arch.v1.json` |
