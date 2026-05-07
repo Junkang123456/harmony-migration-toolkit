@@ -6,12 +6,6 @@ from typing import Any
 
 import yaml
 
-from stages._util import toolkit_root
-
-
-def _taxonomy_path(path: Path | None) -> Path:
-    return path or (toolkit_root() / "data" / "feature_taxonomy.yaml")
-
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -24,21 +18,51 @@ def load_taxonomy(
     path: Path | None,
     overlay_paths: list[Path] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-    base_path = _taxonomy_path(path)
-    base = _load_yaml(base_path)
-    version = str(base.get("version", "1.0"))
-    rows = list(base.get("features") or [])
-    sources = [str(base_path)]
+    """Load explicit taxonomy rows from optional YAML files only (no bundled defaults).
 
-    for overlay_path in overlay_paths or []:
+    Merge order: each overlay is prepended before the previous rows so earlier overlays win
+    on first-match; optional ``path`` acts as the lowest-precedence base file.
+    """
+    overlay_paths = overlay_paths or []
+    rows: list[dict[str, Any]] = []
+    version = "1.0"
+    sources: list[str] = []
+
+    if path is not None:
+        base = _load_yaml(path)
+        version = str(base.get("version", "1.0"))
+        rows = list(base.get("features") or [])
+        sources.append(str(path.resolve()))
+
+    for overlay_path in overlay_paths:
         overlay = _load_yaml(overlay_path)
         overlay_rows = list(overlay.get("features") or [])
-        # App overlays take precedence over generic defaults while preserving first-match semantics.
         rows = overlay_rows + rows
-        sources.insert(0, str(overlay_path))
+        sources.insert(0, str(overlay_path.resolve()))
 
-    _validate_taxonomy_rows(rows, sources)
-    return version, rows, {"sources": sources, "base": str(base_path), "overlays": sources[:-1]}
+    _validate_taxonomy_rows(rows, sources if sources else ["<implicit:empty_base>"])
+    meta = {
+        "sources": sources,
+        "base": str(path.resolve()) if path is not None else "",
+        "overlays": [str(p.resolve()) for p in overlay_paths],
+    }
+    return version, rows, meta
+
+
+def taxonomy_report_source(
+    explicit_rows: list[dict[str, Any]],
+    generated_report: dict[str, Any] | None,
+) -> str:
+    gen = generated_report or {}
+    has_gen = int(gen.get("generated_feature_count") or 0) > 0 or int(gen.get("assigned_screen_count") or 0) > 0
+    has_explicit = bool(explicit_rows)
+    if has_explicit and has_gen:
+        return "generated+explicit_taxonomy"
+    if has_gen:
+        return "generated_taxonomy"
+    if has_explicit:
+        return "explicit_taxonomy"
+    return "none"
 
 
 def _validate_taxonomy_rows(rows: list[dict[str, Any]], sources: list[str]) -> None:
@@ -106,6 +130,7 @@ def build_taxonomy_report(
     screen_to_rule: dict[str, str],
     rows: list[dict[str, Any]],
     taxonomy_meta: dict[str, Any],
+    generated_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     feature_labels = {str(r.get("id")): str(r.get("label") or r.get("id")) for r in rows}
     by_feature: dict[str, int] = {}
@@ -132,18 +157,21 @@ def build_taxonomy_report(
 
     return {
         "schema_version": "1.0",
-        "source": "feature_taxonomy.yaml",
+        "source": taxonomy_report_source(rows, generated_report),
         "taxonomy": taxonomy_meta,
         "summary": {
             "screen_total": len(screen_hosts),
             "matched_screen_count": len(screen_to_feature),
             "unmatched_screen_count": len(unmatched),
             "feature_count": len(by_feature),
+            "generated_feature_count": int((generated_report or {}).get("generated_feature_count") or 0),
+            "generated_assigned_screen_count": int((generated_report or {}).get("assigned_screen_count") or 0),
         },
         "features": [
             {"feature_id": fid, "label": feature_labels.get(fid, fid), "screen_count": count}
             for fid, count in sorted(by_feature.items())
         ],
         "rule_hits": [{"rule_id": rid, "screen_count": count} for rid, count in sorted(rule_hits.items())],
+        "generated": generated_report or {},
         "unmatched_screens": unmatched,
     }

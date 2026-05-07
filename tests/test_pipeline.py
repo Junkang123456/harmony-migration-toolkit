@@ -28,28 +28,29 @@ def test_pipeline_minimal_fixture_schema():
             "--out",
             str(out),
             "--stages",
-            "0,1,2,3,5,4,6",
+            "0,1,2,3,5,4,7",
         ]
     )
 
-    manifest = json.loads((out / "0_android_facts" / "manifest.json").read_text(encoding="utf-8"))
+    inter = out / "intermediate"
+    manifest = json.loads((inter / "0_android_facts" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_checks"]["call_graph"]["symbol_count"] == 3
     assert manifest["artifact_checks"]["warnings"] == []
     assert manifest["spec_tools"]["main_py_sha256"]
 
-    af = json.loads((out / "1_android_facts" / "android_facts.v1.json").read_text(encoding="utf-8"))
+    af = json.loads((inter / "1_android_facts" / "android_facts.v1.json").read_text(encoding="utf-8"))
     assert af["schema_version"] == "1.0"
     assert any(s["class_name"] == "MainActivity" for s in af["screens"])
 
-    fm = json.loads((out / "2_framework_map" / "framework_map.v1.json").read_text(encoding="utf-8"))
+    fm = json.loads((inter / "2_framework_map" / "framework_map.v1.json").read_text(encoding="utf-8"))
     assert fm["rules_version"]
     assert isinstance(fm["gap_items"], list)
 
-    ha = json.loads((out / "3_harmony_arch" / "harmony_arch.v1.json").read_text(encoding="utf-8"))
+    ha = json.loads((inter / "3_harmony_arch" / "harmony_arch.v1.json").read_text(encoding="utf-8"))
     assert ha["bundle_name"] == "com.verifyfix.minimal"
     assert ha["abilities"][0]["name"] == "EntryAbility"
 
-    ft = json.loads((out / "5_feature_tree" / "feature_tree.v1.json").read_text(encoding="utf-8"))
+    ft = json.loads((inter / "5_feature_tree" / "feature_tree.v1.json").read_text(encoding="utf-8"))
     assert ft["schema_version"] == "1.0"
     assert ft["taxonomy_version"] == "1.0"
     assert any(n.get("node_id") == "product_root" for n in ft["nodes"])
@@ -59,7 +60,7 @@ def test_pipeline_minimal_fixture_schema():
     behavior = next(n for n in ft["nodes"] if n.get("node_id") == "behavior:effect:ep:minimal-settings")
     assert behavior["evidence"]["source_file"] == "app/src/main/java/com/verifyfix/minimal/MainActivity.kt"
     assert behavior["evidence"]["line"] == 12
-    assert behavior["logical_feature_id"] == "settings.general"
+    assert behavior["logical_feature_id"].startswith("generated.settings")
     assert behavior["evidence"]["entry_symbol_id"] == "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
     assert any(n.get("node_id") == "function_symbol:fn:com.verifyfix.minimal.MainActivity.openSettings/0" for n in ft["nodes"])
     assert any(e.get("rel") == "enters" for e in ft["edges"])
@@ -68,18 +69,24 @@ def test_pipeline_minimal_fixture_schema():
     assert ft["meta"]["coverage"]["effect_path_attached_to_feature"] == 1
     assert ft["meta"]["coverage"]["behaviors_with_entry_symbol"] >= 1
 
-    spec_ev = json.loads((out / "5_feature_tree" / "feature_spec_evidence.json").read_text(encoding="utf-8"))
+    spec_ev = json.loads((inter / "5_feature_tree" / "feature_spec_evidence.json").read_text(encoding="utf-8"))
     assert spec_ev["features"][0]["source_anchors"]
-    verify = json.loads((out / "5_feature_tree" / "verify_report.json").read_text(encoding="utf-8"))
+    verify = json.loads((inter / "5_feature_tree" / "verify_report.json").read_text(encoding="utf-8"))
     assert verify["status"] in {"pass", "warn"}
-    taxonomy = json.loads((out / "5_feature_tree" / "taxonomy_report.json").read_text(encoding="utf-8"))
+    taxonomy = json.loads((inter / "5_feature_tree" / "taxonomy_report.json").read_text(encoding="utf-8"))
     assert taxonomy["summary"]["matched_screen_count"] >= 1
-    assert taxonomy["summary"]["unmatched_screen_count"] >= 1
+    assert taxonomy["summary"]["generated_feature_count"] >= 1
+    assert taxonomy["summary"]["unmatched_screen_count"] == 0
 
-    assert (out / "viewer" / "feature_tree.html").is_file()
-    assert (out / "viewer" / "feature_tree.v1.json").is_file()
-    assert (out / "viewer" / "taxonomy_report.json").is_file()
-    assert (out / "viewer" / "vendor" / "vis-network.min.js").is_file()
+    bundle = json.loads((out / "agent_bundle.v1.json").read_text(encoding="utf-8"))
+    assert bundle["bundle_kind"] == "harmony_migration_agent_bundle"
+    assert bundle["summary"]["feature_count"] >= 1
+    assert bundle["summary"]["screen_count"] >= 1
+    assert bundle["outline"]["verification"]["status"] in {"pass", "warn"}
+    assert bundle["outline"]["artifacts"]["feature_tree"]["path"] == "intermediate/5_feature_tree/feature_tree.v1.json"
+    assert "feature_tree" not in bundle
+    assert bundle["intermediate_manifest"]["artifact_count"] >= 7
+    assert not (out / "viewer").exists()
 
 
 def test_pipeline_stage4_emit_scaffold_files(tmp_path: Path):
@@ -98,9 +105,31 @@ def test_pipeline_stage4_emit_scaffold_files(tmp_path: Path):
         ]
     )
 
-    assert (out / "4_scaffold" / "SCAFFOLD_PLAN.txt").is_file()
-    assert (out / "4_scaffold" / "README.md").is_file()
-    assert (out / "4_scaffold" / "harmony_arch.snapshot.json").is_file()
+    assert (out / "intermediate" / "4_scaffold" / "SCAFFOLD_PLAN.txt").is_file()
+    assert (out / "intermediate" / "4_scaffold" / "README.md").is_file()
+    assert (out / "intermediate" / "4_scaffold" / "harmony_arch.snapshot.json").is_file()
+
+
+def test_pipeline_stage6_optional_viewer_export(tmp_path: Path):
+    out = tmp_path / "viewer"
+    run_pipeline(
+        [
+            "--android-root",
+            str(ROOT / "fixtures" / "minimal_android"),
+            "--facts-source",
+            str(ROOT / "fixtures" / "minimal_facts"),
+            "--out",
+            str(out),
+            "--stages",
+            "0,1,2,3,5,6",
+        ]
+    )
+
+    assert (out / "viewer" / "feature_tree.html").is_file()
+    assert (out / "viewer" / "feature_tree.v1.json").is_file()
+    assert (out / "viewer" / "taxonomy_report.json").is_file()
+    assert (out / "viewer" / "vendor" / "vis-network.min.js").is_file()
+    assert not (out / "agent_bundle.v1.json").exists()
 
 
 def test_pipeline_stage_dependency_errors(tmp_path: Path):
@@ -155,6 +184,6 @@ def test_pipeline_taxonomy_overlay(tmp_path: Path):
         ]
     )
 
-    taxonomy = json.loads((out / "5_feature_tree" / "taxonomy_report.json").read_text(encoding="utf-8"))
+    taxonomy = json.loads((out / "intermediate" / "5_feature_tree" / "taxonomy_report.json").read_text(encoding="utf-8"))
     assert any(f["feature_id"] == "main.entry" for f in taxonomy["features"])
     assert taxonomy["summary"]["matched_screen_count"] >= 2

@@ -3,9 +3,9 @@
 Deterministic Android → Harmony migration IR pipeline.
 
 Usage:
-  python pipeline.py --android-root PATH [--out DIR] [--stages 0,1,2,3,5,4,6]
+  python pipeline.py --android-root PATH [--out DIR] [--stages 0,1,2,3,5,4,7]
   python pipeline.py --android-root PATH --facts-source PATH  # skip spec-tools (tests)
-  python pipeline.py ... --stages 5,6  # refresh feature tree + viewer when facts exist
+  python pipeline.py ... --stages 5,7  # refresh feature tree + agent bundle when facts exist
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from stages.build_android_facts import build_android_facts
 from stages.build_feature_tree import build_feature_tree
 from stages.build_framework_map import build_framework_map
 from stages.build_harmony_arch import build_harmony_arch
+from stages.export_agent_bundle import export_agent_bundle
 from stages.export_feature_tree_view import export_feature_tree_view
 from stages.stage0_run_spec_tools import run_stage0
 from stages.stage4_emit_scaffold import emit_scaffold_dry_run
@@ -70,9 +71,9 @@ def _parse_stages(raw: str) -> set[int]:
         stages = {int(x.strip()) for x in raw.split(",") if x.strip()}
     except ValueError as exc:
         raise ValueError(f"--stages must be comma-separated integers, got: {raw}") from exc
-    unknown = sorted(s for s in stages if s not in {0, 1, 2, 3, 4, 5, 6})
+    unknown = sorted(s for s in stages if s not in {0, 1, 2, 3, 4, 5, 6, 7})
     if unknown:
-        raise ValueError(f"Unknown stage(s): {unknown}. Valid stages are 0,1,2,3,4,5,6.")
+        raise ValueError(f"Unknown stage(s): {unknown}. Valid stages are 0,1,2,3,4,5,6,7.")
     return stages
 
 
@@ -80,13 +81,18 @@ def main() -> int:
     root = toolkit_root()
     parser = argparse.ArgumentParser(description="Harmony migration deterministic IR pipeline")
     parser.add_argument("--android-root", type=Path, required=True, help="Android project root")
-    parser.add_argument("--out", type=Path, default=root / "out", help="Output directory")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory (default: ANDROID_ROOT/harmony_migration_out)",
+    )
     parser.add_argument("--spec-tools-root", type=Path, default=None, help="spec-tools-for-opencode root")
     parser.add_argument(
         "--stages",
         type=str,
-        default="0,1,2,3,5,4,6",
-        help="Comma-separated stage numbers (default 0,1,2,3,5,4,6)",
+        default="0,1,2,3,5,4,7",
+        help="Comma-separated stage numbers (default 0,1,2,3,5,4,7)",
     )
     parser.add_argument(
         "--skip-spec-tools",
@@ -103,7 +109,7 @@ def main() -> int:
         "--taxonomy",
         type=Path,
         default=None,
-        help="Feature taxonomy YAML override for stage 5",
+        help="Optional feature taxonomy YAML for stage 5 (no bundled defaults; use with --taxonomy-overlay as needed)",
     )
     parser.add_argument(
         "--taxonomy-overlay",
@@ -120,7 +126,7 @@ def main() -> int:
     args = parser.parse_args()
 
     android_root = args.android_root.resolve()
-    out_dir = args.out.resolve()
+    out_dir = args.out.resolve() if args.out else android_root / "harmony_migration_out"
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         stages = _parse_stages(args.stages)
@@ -128,16 +134,19 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    facts_dir = out_dir / "0_android_facts"
-    android_facts_path = out_dir / "1_android_facts" / "android_facts.v1.json"
-    framework_map_path = out_dir / "2_framework_map" / "framework_map.v1.json"
-    harmony_arch_path = out_dir / "3_harmony_arch" / "harmony_arch.v1.json"
-    feature_tree_path = out_dir / "5_feature_tree" / "feature_tree.v1.json"
+    intermediate_dir = out_dir / "intermediate"
+    intermediate_dir.mkdir(parents=True, exist_ok=True)
+    facts_dir = intermediate_dir / "0_android_facts"
+    android_facts_path = intermediate_dir / "1_android_facts" / "android_facts.v1.json"
+    framework_map_path = intermediate_dir / "2_framework_map" / "framework_map.v1.json"
+    harmony_arch_path = intermediate_dir / "3_harmony_arch" / "harmony_arch.v1.json"
+    feature_tree_path = intermediate_dir / "5_feature_tree" / "feature_tree.v1.json"
+    agent_bundle_path = out_dir / "agent_bundle.v1.json"
 
     if 0 in stages:
         run_stage0(
             android_root,
-            out_dir,
+            intermediate_dir,
             args.spec_tools_root,
             skip_spec_tools=args.skip_spec_tools,
             facts_source=args.facts_source,
@@ -194,7 +203,7 @@ def main() -> int:
             return 1
         text = emit_scaffold_dry_run(
             harmony_arch_path,
-            out_dir,
+            intermediate_dir,
             write_files=args.emit_scaffold_files,
         )
         if not args.emit_scaffold_files:
@@ -209,6 +218,23 @@ def main() -> int:
             framework_map_path=framework_map_path if framework_map_path.is_file() else None,
             harmony_arch_path=harmony_arch_path if harmony_arch_path.is_file() else None,
         )
+
+    if 7 in stages:
+        if 5 not in stages and not _require_file(feature_tree_path, 7, "run stage 5 first"):
+            return 1
+        export_agent_bundle(
+            feature_tree_path=feature_tree_path,
+            evidence_path=feature_tree_path.parent / "feature_spec_evidence.json",
+            verify_report_path=feature_tree_path.parent / "verify_report.json",
+            taxonomy_report_path=feature_tree_path.parent / "taxonomy_report.json",
+            framework_map_path=framework_map_path,
+            harmony_arch_path=harmony_arch_path,
+            android_facts_path=android_facts_path,
+            facts_dir=facts_dir,
+            intermediate_dir=intermediate_dir,
+            out_path=agent_bundle_path,
+        )
+        _validate_file(agent_bundle_path, "agent_bundle.v1.schema.json")
 
     print("Pipeline completed.", file=sys.stderr)
     return 0

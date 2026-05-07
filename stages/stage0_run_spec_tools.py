@@ -108,6 +108,7 @@ def _copy_from_spec_output(spec_output: Path, facts_dir: Path) -> None:
         "ui_paths.json",
         "ui_paths_legacy.json",
         "ui_paths_report.json",
+        "ui_paths_coverage_report.json",
         "ui_effect_paths.json",
         "ui_paths_enumerated.json",
     ):

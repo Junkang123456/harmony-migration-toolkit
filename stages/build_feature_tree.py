@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from stages.feature_taxonomy_miner import mine_generated_taxonomy
 from stages.feature_tree_reports import build_feature_spec_evidence, build_verify_report
 from stages.feature_tree_taxonomy import build_taxonomy_report, load_taxonomy, taxonomy_match
 from stages._util import dump_json, kotlin_outer_host_class, load_json
@@ -317,6 +318,19 @@ def build_feature_tree(
                         "source_path": "",
                     }
 
+    for sym in sorted(function_symbols, key=lambda s: (str(s.get("class_name") or ""), str(s.get("file") or ""))):
+        cls = str(sym.get("class_name") or "").strip()
+        if not cls:
+            continue
+        h = host(cls)
+        if h not in screen_hosts:
+            continue
+        file_path = str(sym.get("file") or "").strip()
+        if file_path and not screen_hosts[h].get("source_path"):
+            screen_hosts[h]["source_path"] = file_path
+        if "." in cls and not screen_hosts[h].get("package"):
+            screen_hosts[h]["package"] = cls.rsplit(".", 1)[0]
+
     feature_ids_used: set[str] = set()
     screen_to_feature: dict[str, str] = {}
     screen_to_rule: dict[str, str] = {}
@@ -327,15 +341,43 @@ def build_feature_tree(
             screen_to_feature[h] = fid
             screen_to_rule[h] = rule_id or fid
 
+    generated_screen_to_feature, generated_screen_to_rule, generated_taxonomy_report = mine_generated_taxonomy(
+        screen_hosts,
+        [{**e, "from": host(str(e.get("from", ""))), "to": host(str(e.get("to", "")))} for e in nav_edges],
+        screen_to_feature,
+    )
+    for h, fid in sorted(generated_screen_to_feature.items(), key=lambda x: x[0]):
+        if h in screen_to_feature:
+            continue
+        feature_ids_used.add(fid)
+        screen_to_feature[h] = fid
+        screen_to_rule[h] = generated_screen_to_rule.get(h, fid)
+
+    feature_labels: dict[str, str] = {str(r.get("id")): str(r.get("label") or r.get("id")) for r in tax_rows}
+    generated_features_by_id = {
+        str(f.get("feature_id")): f for f in generated_taxonomy_report.get("generated_features", [])
+    }
+    for fid, row in generated_features_by_id.items():
+        feature_labels[fid] = str(row.get("label") or fid)
+
     for fid in sorted(feature_ids_used):
-        row = next((r for r in tax_rows if str(r.get("id")) == fid), {})
+        generated = generated_features_by_id.get(fid)
+        evidence: dict[str, Any] = {"taxonomy": taxonomy_meta.get("sources", [])}
+        if generated:
+            evidence.update(
+                {
+                    "taxonomy_source": "generated",
+                    "top_tokens": generated.get("top_tokens") or [],
+                    "representative_screens": generated.get("representative_screens") or [],
+                }
+            )
         nodes.append(
             {
                 "node_id": f"feature:{fid}",
                 "kind": "feature",
-                "label": str(row.get("label") or fid),
+                "label": feature_labels.get(fid, fid),
                 "logical_feature_id": fid,
-                "evidence": {"taxonomy": taxonomy_meta.get("sources", [])},
+                "evidence": evidence,
             }
         )
 
@@ -375,7 +417,7 @@ def build_feature_tree(
                 "to": f"feature:{fid}",
                 "rel": "parent_of",
                 "determinism": "rule",
-                "source": "feature_taxonomy.yaml",
+                "source": "generated_taxonomy" if fid in generated_features_by_id else "explicit_taxonomy",
             }
         )
 
@@ -387,7 +429,7 @@ def build_feature_tree(
                 "to": f"screen:{h}",
                 "rel": "parent_of",
                 "determinism": "rule",
-                "source": "feature_taxonomy.yaml",
+                "source": "generated_taxonomy" if fid in generated_features_by_id else "explicit_taxonomy",
             }
         )
 
@@ -701,7 +743,14 @@ def build_feature_tree(
     coverage = _feature_line_coverage(nodes, edges)
     coverage.update(effect_stats)
     coverage.update(_function_coverage(nodes, edges, unresolved_calls))
-    taxonomy_report = build_taxonomy_report(screen_hosts, screen_to_feature, screen_to_rule, tax_rows, taxonomy_meta)
+    taxonomy_report = build_taxonomy_report(
+        screen_hosts,
+        screen_to_feature,
+        screen_to_rule,
+        tax_rows,
+        taxonomy_meta,
+        generated_taxonomy_report,
+    )
 
     ir: dict[str, Any] = {
         "schema_version": "1.0",

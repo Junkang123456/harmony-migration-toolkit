@@ -1,6 +1,6 @@
 # harmony-migration-toolkit
 
-Deterministic **Android → HarmonyOS migration IR** pipeline. It wraps [`spec-tools-for-opencode`](../spec-tools-for-opencode) for static facts (Stage 0), then emits versioned JSON artifacts for framework mapping and Harmony **architecture placeholders**.
+Deterministic **Android → HarmonyOS migration IR** pipeline. It wraps [`spec-tools-for-opencode`](../spec-tools-for-opencode) for static facts (Stage 0), then emits one agent-consumable migration bundle plus reproducible intermediate artifacts.
 
 Non-deterministic work (**LLM / human**) is restricted to `gap_items` and optional `llm_out/` — see [prompts/gap_prompt.md](prompts/gap_prompt.md).
 
@@ -22,44 +22,59 @@ End-to-end design for the planned **feature tree IR** (screen / UI / behavior / 
 cd harmony-migration-toolkit
 pip install -r requirements.txt
 
-# Full run (executes spec-tools main.py — may take several seconds)
+# Full run
 python pipeline.py --android-root /path/to/android/project
+```
 
-# Reuse last spec-tools output without re-scanning
-python pipeline.py --android-root /path/to/android/project --skip-spec-tools
+The default full run executes all deterministic stages needed for agent handoff. The main file to inspect is:
 
-# Tests / CI: inject pre-built facts
-python pipeline.py --android-root ./fixtures/minimal_android --facts-source ./fixtures/minimal_facts --out ./out_fixture_test
+```text
+/path/to/android/project/harmony_migration_out/agent_bundle.v1.json
+```
 
-# Refresh only feature tree + viewer from existing facts and android_facts
-python pipeline.py --android-root /path/to/android/project --out ./out --stages 5,6
+Detailed reproducible artifacts live under `/path/to/android/project/harmony_migration_out/intermediate/`.
 
-# Use an app-specific feature taxonomy overlay
-python pipeline.py --android-root /path/to/android/project --taxonomy-overlay ./taxonomies/my_app.yaml
+To write output somewhere else, pass `--out`:
 
-# Emit scaffold summary files
-python pipeline.py ... --emit-scaffold-files
+```bash
+python pipeline.py --android-root /path/to/android/project --out /path/to/output
 ```
 
 ### Stages
 
 | Stage | Output |
 |-------|--------|
-| 0 | `out/0_android_facts/` — copy of spec-tools `output/` + normalized paths + `manifest.json` |
-| 1 | `out/1_android_facts/android_facts.v1.json` |
-| 2 | `out/2_framework_map/framework_map.v1.json` |
-| 3 | `out/3_harmony_arch/harmony_arch.v1.json` |
-| 4 | Dry-run plan to stdout, or `out/4_scaffold/` with `--emit-scaffold-files` |
-| 5 | `out/5_feature_tree/feature_tree.v1.json` + `feature_spec_evidence.json` + `verify_report.json` |
-| 6 | `out/viewer/` — static feature tree viewer and sidecar JSON |
+| 0 | `<output>/intermediate/0_android_facts/` — copy of spec-tools `output/` + normalized paths + `manifest.json` |
+| 1 | `<output>/intermediate/1_android_facts/android_facts.v1.json` |
+| 2 | `<output>/intermediate/2_framework_map/framework_map.v1.json` |
+| 3 | `<output>/intermediate/3_harmony_arch/harmony_arch.v1.json` |
+| 4 | Dry-run plan to stdout, or `<output>/intermediate/4_scaffold/` with `--emit-scaffold-files` |
+| 5 | `<output>/intermediate/5_feature_tree/feature_tree.v1.json` + `feature_spec_evidence.json` + `verify_report.json` |
+| 6 | Optional debug `<output>/viewer/` — static feature tree viewer and sidecar JSON |
+| 7 | `<output>/agent_bundle.v1.json` — final agent-consumable migration bundle |
 
-Select stages: `--stages 0,1,2` (comma-separated).
+The default output directory is `<android-root>/harmony_migration_out`. The default stage order is `0,1,2,3,5,4,7`: feature tree generation runs before scaffold emission and final bundle export. The root output is intentionally small: `agent_bundle.v1.json` is the deliverable, while deterministic debugging artifacts live under `intermediate/`.
 
-The default stage order is `0,1,2,3,5,4,6`: feature tree generation runs before scaffold emission so the viewer sidecars can be refreshed in the same default run.
+### Advanced / Debug
+
+Most users should use the full run above. These flags are mainly for tests, debugging, or rerunning part of an existing output:
+
+```bash
+# Reuse existing spec-tools output without rescanning the Android project
+python pipeline.py --android-root /path/to/android/project --skip-spec-tools
+
+# Run selected stages only
+python pipeline.py --android-root /path/to/android/project --stages 5,7
+
+# Generate the optional HTML debug viewer
+python pipeline.py --android-root /path/to/android/project --stages 0,1,2,3,5,6
+```
 
 ### Feature taxonomy
 
-Stage 5 uses [data/feature_taxonomy.yaml](data/feature_taxonomy.yaml) to group screens into logical `feature:*` nodes. The built-in taxonomy contains common app areas, but new apps should usually add an app-specific overlay with `--taxonomy-overlay`. Stage 5 writes `out/5_feature_tree/taxonomy_report.json`, including matched feature counts and `unmatched_screens`, so taxonomy rules can be iterated after the first run.
+Stage 5 groups screens into logical `feature:*` nodes with deterministic automatic mining from screen names, layouts, packages, source paths, and navigation affinity. There is **no** bundled product taxonomy; pass `--taxonomy` (base YAML) and/or repeated `--taxonomy-overlay` only when you want explicit rules on top of the generated grouping.
+
+Stage 5 writes `<output>/intermediate/5_feature_tree/taxonomy_report.json`, including generated feature counts, matched screen counts, and any remaining `unmatched_screens`.
 
 ## LLM boundary (contract)
 
