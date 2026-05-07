@@ -2,7 +2,7 @@
 
 **文档版本**：2026-05-07  
 **状态**：与当前 `pipeline.py` / `build_feature_tree.py` / `export_agent_bundle.py` 实现对齐；本文档为功能树与 Agent Bundle 设计的单一事实来源（SSOT）。  
-**范围**：[harmony-migration-toolkit](../)；Stage 0 仍包装 [spec-tools-for-opencode](../../spec-tools-for-opencode)（或 `--facts-source` 预置产物）。
+**范围**：[harmony-migration-toolkit](../)；Stage 0 运行内置 [`bundled_spec_tools/`](../bundled_spec_tools/)（或 `--facts-source` 预置产物）。
 
 ---
 
@@ -44,7 +44,7 @@
 | 路径 | 说明 |
 |------|------|
 | `agent_bundle.v1.json` | **最终交付**：摘要 + 大纲 + 中间件清单 + `agent_hints`（见 §2.1；Schema 见 §11） |
-| `intermediate/0_android_facts/` | spec-tools 产物 + `manifest.json` + 路径归一化 |
+| `intermediate/0_android_facts/` | `bundled_spec_tools/output/` 拷贝 + `manifest.json` + 路径归一化 |
 | `intermediate/1_android_facts/android_facts.v1.json` | Android 摘要 IR |
 | `intermediate/2_framework_map/framework_map.v1.json` | 框架映射与 `gap_items`（规则表 [`data/framework_map/rules.yaml`](../data/framework_map/rules.yaml)） |
 | `intermediate/3_harmony_arch/harmony_arch.v1.json` | Harmony 模块 / Ability / route 占位 |
@@ -139,7 +139,7 @@ bundle **不嵌入**全量 `nodes`/`edges`；全图请读 `outline.artifacts.fea
 | `from` / `to` | string | `node_id` |
 | `rel` | string | 见 4.2 |
 | `determinism` | `rule` \| `static_analysis` | |
-| `via` / `trigger` / `source` | string? | 与 spec-tools `navigation_graph` 边字段对齐，便于审计 |
+| `via` / `trigger` / `source` | string? | 与静态扫描器 `navigation_graph` 边字段对齐，便于审计 |
 | `via_behavior_id` | string? | 可选：指向中间 `behavior` 节点 |
 
 允许的非 screen 边示例：`parent_of`、`owns_ui`、`implements`、`evidence_in_file` 等。
@@ -261,7 +261,7 @@ flowchart TB
 
 | Stage | 名称 | 产物 |
 |-------|------|------|
-| 0 | spec-tools 包装 | `intermediate/0_android_facts/` |
+| 0 | `bundled_spec_tools`（`main.py`） | `intermediate/0_android_facts/` |
 | 1 | android_facts | `intermediate/1_android_facts/android_facts.v1.json` |
 | 2 | framework_map | `intermediate/2_framework_map/framework_map.v1.json` |
 | 3 | harmony_arch | `intermediate/3_harmony_arch/harmony_arch.v1.json` |
@@ -277,8 +277,8 @@ flowchart TB
 - `python pipeline.py --android-root PATH [--out DIR]` — 默认 `--stages 0,1,2,3,5,4,7`。
 - `--stages 5,7` — 在已有 `0_android_facts`、`1_android_facts` 下刷新功能树与 bundle（Stage 7 仍会校验 Stage 2/3 产物是否存在；完整刷新通常带 `2,3`）。
 - `--taxonomy PATH` / `--taxonomy-overlay PATH`（可重复）— Stage 5 可选显式功能域规则（**无默认 bundled YAML**）。
-- `--facts-source DIR` — 拷贝预置 facts 到 `0_android_facts`，跳过 spec-tools（测试与离线场景）。
-- `--skip-spec-tools` — 复用已有 spec-tools `output/`。
+- `--facts-source DIR` — 拷贝预置 facts 到 `0_android_facts`，跳过 Stage 0 扫描（测试与离线场景）。
+- `--skip-spec-tools` — 复用已有 `bundled_spec_tools/output/`（或 `--spec-tools-root` 指向目录下的 `output/`）。
 - `--emit-scaffold-files` — Stage 4 写入 `4_scaffold/` 而非仅 stdout。
 - `--stages ...,6` — 导出 `<out>/viewer/`（依赖 toolkit [`viewer/`](../viewer/) 目录完整）。
 
@@ -435,7 +435,7 @@ Cursor 内计划文件（如 `VerifyFix/.cursor/plans/功能树_ir_扩展_31d9ac
 | 组件 | 路径 |
 |------|------|
 | 流水线入口 | [pipeline.py](../pipeline.py) |
-| Stage 0 | [stages/stage0_run_spec_tools.py](../stages/stage0_run_spec_tools.py) |
+| Stage 0 | [stages/stage0_run_spec_tools.py](../stages/stage0_run_spec_tools.py) + [bundled_spec_tools/](../bundled_spec_tools/) |
 | Android facts | [stages/build_android_facts.py](../stages/build_android_facts.py) |
 | 功能树构建 | [stages/build_feature_tree.py](../stages/build_feature_tree.py) |
 | 生成 taxonomy | [stages/feature_taxonomy_miner.py](../stages/feature_taxonomy_miner.py) |

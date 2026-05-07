@@ -90,8 +90,13 @@ def _normalize_dir_facts_dir(facts_dir: Path, android_root: Path) -> None:
         dump_json(p, fixed)
 
 
+def default_spec_tools_root() -> Path:
+    """Directory containing bundled `main.py` + `extractors/` (toolkit-internal)."""
+    return toolkit_root() / "bundled_spec_tools"
+
+
 def _copy_from_spec_output(spec_output: Path, facts_dir: Path) -> None:
-    """Populate facts_dir from spec-tools output/ (does not run main.py)."""
+    """Populate facts_dir from bundled spec-tools `output/` (does not run main.py)."""
     if facts_dir.exists():
         shutil.rmtree(facts_dir)
     facts_dir.mkdir(parents=True, exist_ok=True)
@@ -134,12 +139,12 @@ def run_stage0(
     facts_source: Path | None = None,
 ) -> dict[str, Any]:
     """
-    Populate out_dir/0_android_facts from spec-tools or from --facts-source.
+    Populate out_dir/0_android_facts from bundled_spec_tools or from --facts-source.
 
-    If facts_source is set, copy that directory tree (for tests) and skip spec-tools.
+    If facts_source is set, copy that directory tree (for tests) and skip running main.py.
     """
     android_root = android_root.resolve()
-    spec_tools = (spec_tools_root or toolkit_root().parent / "spec-tools-for-opencode").resolve()
+    spec_tools = (spec_tools_root or default_spec_tools_root()).resolve()
     spec_main = spec_tools / "main.py"
     spec_output = spec_tools / "output"
     facts_dir = out_dir / "0_android_facts"
@@ -153,14 +158,18 @@ def run_stage0(
         shutil.copytree(src, facts_dir)
     elif not skip_spec_tools:
         if not spec_main.is_file():
-            raise FileNotFoundError(f"spec-tools main.py not found: {spec_main}")
+            raise FileNotFoundError(
+                f"Bundled spec-tools main.py not found: {spec_main}. "
+                "Restore harmony-migration-toolkit/bundled_spec_tools or pass --spec-tools-root."
+            )
         cmd = [sys.executable, str(spec_main), str(android_root)]
         subprocess.run(cmd, cwd=str(spec_tools), check=True)
         _copy_from_spec_output(spec_output, facts_dir)
     else:
         if not spec_output.is_dir():
             raise FileNotFoundError(
-                f"--skip-spec-tools requires existing {spec_output}; run without flag first."
+                f"--skip-spec-tools requires existing {spec_output} "
+                f"(run Stage 0 without --skip-spec-tools once, or populate output/ under {spec_tools})."
             )
         _copy_from_spec_output(spec_output, facts_dir)
 

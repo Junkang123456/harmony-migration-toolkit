@@ -4,7 +4,7 @@ Deterministic Android → Harmony migration IR pipeline.
 
 Usage:
   python pipeline.py --android-root PATH [--out DIR] [--stages 0,1,2,3,5,4,7]
-  python pipeline.py --android-root PATH --facts-source PATH  # skip spec-tools (tests)
+  python pipeline.py --android-root PATH --facts-source PATH  # skip Stage 0 scanner (tests)
   python pipeline.py ... --stages 5,7  # refresh feature tree + agent bundle when facts exist
 """
 from __future__ import annotations
@@ -87,7 +87,12 @@ def main() -> int:
         default=None,
         help="Output directory (default: ANDROID_ROOT/harmony_migration_out)",
     )
-    parser.add_argument("--spec-tools-root", type=Path, default=None, help="spec-tools-for-opencode root")
+    parser.add_argument(
+        "--spec-tools-root",
+        type=Path,
+        default=None,
+        help="Override bundled static analyzer root (default: toolkit bundled_spec_tools/)",
+    )
     parser.add_argument(
         "--stages",
         type=str,
@@ -97,13 +102,13 @@ def main() -> int:
     parser.add_argument(
         "--skip-spec-tools",
         action="store_true",
-        help="Reuse existing spec-tools output/ without re-running main.py",
+        help="Reuse existing bundled_spec_tools/output/ without re-running main.py",
     )
     parser.add_argument(
         "--facts-source",
         type=Path,
         default=None,
-        help="Copy pre-built facts tree to 0_android_facts (skips spec-tools run)",
+        help="Copy pre-built facts tree to 0_android_facts (skips bundled static analyzer run)",
     )
     parser.add_argument(
         "--taxonomy",

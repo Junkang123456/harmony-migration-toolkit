@@ -6,3 +6,6 @@ pytest_minimal/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Bundled spec-tools writes scratch JSON here when main.py runs in-place
+bundled_spec_tools/output/

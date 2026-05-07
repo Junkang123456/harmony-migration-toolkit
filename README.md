@@ -1,6 +1,6 @@
 # harmony-migration-toolkit
 
-Deterministic **Android → HarmonyOS migration IR** pipeline. It wraps [`spec-tools-for-opencode`](../spec-tools-for-opencode) for static facts (Stage 0), then emits one agent-consumable migration bundle plus reproducible intermediate artifacts.
+Deterministic **Android → HarmonyOS migration IR** pipeline. Stage 0 runs the **bundled** static analyzer under [`bundled_spec_tools/`](bundled_spec_tools/) (vendored from the former `spec-tools-for-opencode` tree), then emits one agent-consumable migration bundle plus reproducible intermediate artifacts.
 
 Non-deterministic work (**LLM / human**) is restricted to `gap_items` and optional `llm_out/` — see [prompts/gap_prompt.md](prompts/gap_prompt.md).
 
@@ -14,7 +14,7 @@ End-to-end design for the planned **feature tree IR** (screen / UI / behavior / 
 
 - Python 3.10+
 - `pip install -r requirements.txt`
-- Stage 0 (default): sibling checkout at `../spec-tools-for-opencode` or pass `--spec-tools-root`.
+- Stage 0 (default): uses `harmony-migration-toolkit/bundled_spec_tools/`; pass `--spec-tools-root` only if you maintain a fork elsewhere.
 
 ## Usage
 
@@ -44,7 +44,7 @@ python pipeline.py --android-root /path/to/android/project --out /path/to/output
 
 | Stage | Output |
 |-------|--------|
-| 0 | `<output>/intermediate/0_android_facts/` — copy of spec-tools `output/` + normalized paths + `manifest.json` |
+| 0 | `<output>/intermediate/0_android_facts/` — copy of `bundled_spec_tools/output/` + normalized paths + `manifest.json` |
 | 1 | `<output>/intermediate/1_android_facts/android_facts.v1.json` |
 | 2 | `<output>/intermediate/2_framework_map/framework_map.v1.json` |
 | 3 | `<output>/intermediate/3_harmony_arch/harmony_arch.v1.json` |
@@ -60,7 +60,7 @@ The default output directory is `<android-root>/harmony_migration_out`. The defa
 Most users should use the full run above. These flags are mainly for tests, debugging, or rerunning part of an existing output:
 
 ```bash
-# Reuse existing spec-tools output without rescanning the Android project
+# Reuse existing bundled_spec_tools/output without rescanning the Android project
 python pipeline.py --android-root /path/to/android/project --skip-spec-tools
 
 # Run selected stages only
@@ -78,7 +78,7 @@ Stage 5 writes `<output>/intermediate/5_feature_tree/taxonomy_report.json`, incl
 
 ## LLM boundary (contract)
 
-**Deterministic tools own:** merging XML + source facts (via spec-tools), Gradle/manifest parsing, framework **mapping tables** under [data/framework_map/rules.yaml](data/framework_map/rules.yaml), IR JSON and schema validation.
+**Deterministic tools own:** merging XML + source facts (via `bundled_spec_tools/`), Gradle/manifest parsing, framework **mapping tables** under [data/framework_map/rules.yaml](data/framework_map/rules.yaml), IR JSON and schema validation.
 
 **LLM may assist:** filling `implementation_notes`, ArkTS/ArkUI drafts, Compose-heavy UI, JNI/NAPI ports — only via structured outputs described in [prompts/gap_prompt.md](prompts/gap_prompt.md).
 
