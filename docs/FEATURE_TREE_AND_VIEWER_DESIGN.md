@@ -1,8 +1,8 @@
 # Feature Tree（功能树）、Agent Bundle 与可选可视化：完整设计
 
-**文档版本**：2026-05-06  
-**状态**：已按 agent bundle 输出重构，供维护与后续增强对照  
-**范围**：[harmony-migration-toolkit](../) 扩展；Stage 0 仍复用 [spec-tools-for-opencode](../../spec-tools-for-opencode)。
+**文档版本**：2026-05-07  
+**状态**：与当前 `pipeline.py` / `build_feature_tree.py` / `export_agent_bundle.py` 实现对齐；本文档为功能树与 Agent Bundle 设计的单一事实来源（SSOT）。  
+**范围**：[harmony-migration-toolkit](../)；Stage 0 仍包装 [spec-tools-for-opencode](../../spec-tools-for-opencode)（或 `--facts-source` 预置产物）。
 
 ---
 
@@ -14,14 +14,14 @@
 
 - 统一的 **功能域（feature）** 与 **屏（screen）**、**UI**、**行为**、**实现锚点** 的可追溯图模型；
 - **屏与屏之间关系** 的结构化表达（与 `navigation_graph` 一致且可折叠合成类）；
-- **单文件 agent 输入**，避免下游 agent 需要同时读取多个 stage 目录；
+- **以 bundle 为首选入口**，并按需跟随 `outline.artifacts` 打开少量 JSON（通常为功能树全图与校验报告），避免无结构地遍历整个 `intermediate/`；
 - **可复现的交互式可视化**，仅作为可选调试/评审输出。
 
 ### 1.2 目标
 
 | 目标 | 说明 |
 |------|------|
-| **最终 agent 产物** | `agent_bundle.v1.json`：单文件结构化 JSON，供 agent 直接消费。 |
+| **最终 agent 产物** | `agent_bundle.v1.json`：单文件摘要 + 大纲 + artifact 指针；**完整功能树**见 `intermediate/5_feature_tree/feature_tree.v1.json`。 |
 | **核心图 IR** | `intermediate/5_feature_tree/feature_tree.v1.json`：有向图（树 + 跨边），Schema 校验，可 diff。 |
 | **覆盖维度** | Screen、UI（surface/control）、静态可抽取的 **behavior**、**implementation** 锚点（文件/行/符号）。 |
 | **鸿蒙对齐** | 同一 `node_id` / `logical_feature_id` 上挂 `projection.harmony`；不另造一套互斥的业务树。 |
@@ -39,54 +39,73 @@
 
 ## 2. 核心产物与目录
 
-当前默认输出在 `out/` 下只保留最终 agent 文件与中间目录：
+默认输出目录为 **`<android-root>/harmony_migration_out`**（`--out` 可覆盖）。根目录保持精简：**完整功能树不内联在 bundle 中**，由 `outline.artifacts` 指向 `intermediate/` 下 JSON。
 
 | 路径 | 说明 |
 |------|------|
-| `agent_bundle.v1.json` | **最终交付**：agent 直接消费的单文件 bundle |
-| `intermediate/0_android_facts/` | spec-tools 拷贝 + manifest + 路径归一化 |
+| `agent_bundle.v1.json` | **最终交付**：摘要 + 大纲 + 中间件清单 + `agent_hints`（见 §2.1；Schema 见 §11） |
+| `intermediate/0_android_facts/` | spec-tools 产物 + `manifest.json` + 路径归一化 |
 | `intermediate/1_android_facts/android_facts.v1.json` | Android 摘要 IR |
-| `intermediate/2_framework_map/framework_map.v1.json` | 框架映射与 `gap_items` |
+| `intermediate/2_framework_map/framework_map.v1.json` | 框架映射与 `gap_items`（规则表 [`data/framework_map/rules.yaml`](../data/framework_map/rules.yaml)） |
 | `intermediate/3_harmony_arch/harmony_arch.v1.json` | Harmony 模块 / Ability / route 占位 |
-| `intermediate/4_scaffold/` | 可选 scaffold dry-run 文件 |
-| `intermediate/5_feature_tree/feature_tree.v1.json` | 功能树主 IR 与 sidecar reports |
-| `viewer/` | 仅显式 `--stages ... ,6` 时生成的 debug viewer |
+| `intermediate/4_scaffold/` | 可选 scaffold 文件（`--emit-scaffold-files`）；默认 Stage 4 仅 stdout dry-run |
+| `intermediate/5_feature_tree/feature_tree.v1.json` | 功能树主 IR（权威有向图） |
+| `intermediate/5_feature_tree/feature_spec_evidence.json` | feature → 规范与源码锚点 |
+| `intermediate/5_feature_tree/verify_report.json` | 静态验证、缺失证据、unresolved calls 等 |
+| `intermediate/5_feature_tree/taxonomy_report.json` | 功能域：生成聚类统计、`unmatched_screens`、显式规则来源 |
+| `viewer/` | 仅 `--stages ... ,6` 时生成在 **`<out>/viewer/`**；需 toolkit 内 [`viewer/`](../viewer/) 存在（HTML + `vendor/`） |
 
-### 2.1 `agent_bundle.v1.json` 顶层结构
+### 2.1 `agent_bundle.v1.json` 顶层结构（实现）
+
+bundle **不嵌入**全量 `nodes`/`edges`；全图请读 `outline.artifacts.feature_tree` 所指路径（测试亦断言根对象无 `feature_tree` 键）。
 
 ```json
 {
   "schema_version": "1.0",
   "bundle_kind": "harmony_migration_agent_bundle",
-  "meta": {},
+  "meta": {
+    "feature_tree": {},
+    "verification_status": "",
+    "taxonomy_summary": {},
+    "framework_rules_version": "",
+    "harmony_bundle_name": ""
+  },
   "agent_hints": {},
-  "feature_tree": {},
-  "evidence": {},
-  "verification": {},
-  "taxonomy": {},
-  "harmony_projection": {},
-  "framework_mapping": {},
-  "android_summary": {},
-  "intermediate_manifest": {}
+  "summary": {},
+  "outline": {
+    "app": {},
+    "features": [],
+    "migration": {},
+    "verification": {},
+    "taxonomy": {},
+    "artifacts": {}
+  },
+  "intermediate_manifest": {
+    "root": "",
+    "artifact_count": 0,
+    "artifacts": {}
+  }
 }
 ```
 
-`feature_tree` 仍是核心图；其余字段是 agent 常用上下文，避免 agent 额外打开多个中间文件。
+- **`meta.feature_tree`**：`node`/`edge` 计数、`nodes_by_kind`、`edges_by_rel`、`coverage` 等摘要。
+- **`outline.features`**：按 feature 的精简列表（条数上限约 256），含 `taxonomy_source`、`top_tokens`、`representative_screens` 等。
+- **`outline.app`**：manifest、Gradle 模块、`navigation_summary`、`ui_fidelity`、Stage0 `artifact_checks`、`ui_paths_legacy` 计数等。
+- **`outline.artifacts.*`**：指向 `intermediate/...` 各 JSON，含 `bytes` 字段便于体量感知。
 
 ---
 
 ## 3. `feature_tree.v1` 信息模型
 
-### 3.1 顶层字段（建议）
+### 3.1 顶层字段（与 Schema 一致）
 
 - `schema_version`: `"1.0"`
 - `platform`: `"android"`（鸿蒙侧未来同源文件可为 `"harmony"`）
-- `android_root`: 分析根路径（建议相对或规范化为 posix）
-- `ui_fidelity`: `high_xml` | `mixed` | `low_for_compose`（继承或复算自现有逻辑）
-- `taxonomy_version`: 与可选传入的 taxonomy YAML（`--taxonomy`）中的 `version` 对齐；未传入文件时默认为 `"1.0"`
-- `nodes`: 数组
-- `edges`: 数组
-- `meta`: 可选（生成时间、spec-tools 版本、节点数统计等）
+- `android_root`: 分析根路径
+- `ui_fidelity`: `high_xml` | `mixed` | `low_for_compose`（来自 `android_facts`）
+- `taxonomy_version`: 与 `--taxonomy` 指定 YAML 顶层的 `version` 一致；**未传入任何基础 taxonomy 文件**时为 `"1.0"`（覆盖层 `--taxonomy-overlay` 不改变该字段，除非同时提供 `--taxonomy`）
+- `nodes` / `edges`: 数组
+- `meta`: 包含 `node_count`、`edge_count`、`coverage`（spec 覆盖、effect path、`function_symbol` / `behavior` 统计等）
 
 ### 3.2 节点 `node`（共同字段）
 
@@ -106,10 +125,11 @@
 | `product_root` | 应用根 | manifest / applicationId |
 | `feature` | 功能域 | 确定性 token 聚类 + 可选 `--taxonomy` / `--taxonomy-overlay` YAML |
 | `screen` | 一屏（Activity / Fragment / Dialog **宿主类**） | `navigation_graph.nodes`；合成类折叠入宿主 |
-| `ui_surface` | 布局或 Compose 占位容器 | `layout` + `specs/*_spec.json` |
-| `ui_control` | 可交互控件 | XML id、spec `ui_elements` |
-| `behavior` | 静态可描述行为 | `ground_truth`、`source_findings` |
-| `implementation` | 实现锚点 | 文件路径、行号、`enclosing_fn`、`component` 等 |
+| `ui_surface` | 布局或 Compose 占位容器 | `0_android_facts/specs/*_spec.json` |
+| `ui_control` | 可交互控件 | spec `ui_elements` |
+| `behavior` | UI 效果路径（含入口符号锚点） | **`ui_effect_paths.json`**（`evidence.source` 为 `ui_effect_paths.json`） |
+| `function_symbol` | 函数符号节点 | **`function_symbols.json`** |
+| `implementation` | 实现锚点 | **`source_findings.json`**（`findings` 各 bucket） |
 
 ### 3.4 边 `edge`
 
@@ -144,15 +164,29 @@
 - 不维护第二套「仅 screen」图；**screen↔screen** 关系全部是 **`edges[]` 中 `from`/`to` 对应 `kind: screen` 的节点**。
 - Kotlin **合成类**先映射到 **宿主 `node_id`**，再连边，避免 `$lambda$` 爆炸。
 
-### 4.2 `rel` 枚举（首版）
+### 4.2 `rel` 枚举（Schema + 当前生成器）
+
+**导航类**（`navigation_graph.json` → screen 之间，`determinism`: `static_analysis`）：
 
 | rel | 语义 |
 |-----|------|
-| `navigates_to` | 典型 Activity 跳转 |
-| `presents_modal` | Dialog / BottomSheet 叠在当前屏上 |
-| `embeds_fragment` | 同 Activity 内 Fragment（仅当静态可解析） |
-| `returns_to` | 可选；首版可不生成 |
-| `deep_links_to` | Intent filter / deep link（若扫描到） |
+| `navigates_to` | Activity 类跳转 |
+| `presents_modal` | Dialog / BottomSheet / `commons_dialog` 等叠屏 |
+| `embeds_fragment` | 同 Activity 内 Fragment（静态可解析时） |
+| `returns_to` | 预留 |
+| `deep_links_to` | 预留 / deep link |
+
+**图结构与证据类**（feature/UI/符号/行为）：
+
+| rel | 语义 |
+|-----|------|
+| `parent_of` | product→feature→screen/behavior、feature→behavior、未匹配屏挂根等 |
+| `owns_ui` | screen→`ui_surface`→`ui_control` |
+| `triggers` | screen→`behavior` |
+| `enters` | behavior→`function_symbol`（入口方法） |
+| `implements` | screen→`implementation` |
+| `evidence_in_file` | `function_symbol`→`implementation` |
+| `calls` | `function_symbol`→`function_symbol`（**`call_graph.json`**） |
 
 ### 4.3 细化：经 `behavior` 或 `ui_control`
 
@@ -179,38 +213,45 @@
 
 ```mermaid
 flowchart TB
-  subgraph in [Stage0 输入]
+  subgraph in [Stage0 facts 目录]
     NAV[navigation_graph.json]
-    SPEC[specs目录]
-    GT[ground_truth.json]
+    SPEC[specs/*_spec.json]
     SF[source_findings.json]
-    STR[strings内嵌于static_xml]
+    UFX[ui_effect_paths.json]
+    FSYM[function_symbols.json]
+    CG[call_graph.json]
   end
   subgraph build [build_feature_tree]
-    TAX[可选 taxonomy YAML / 自动生成]
-    COLLAPSE[合成类折叠]
-    NODES[生成nodes]
-    EDGES[生成edges含screen边]
-    PROJ[挂载projection.harmony]
+    TAX[可选 taxonomy YAML + mine_generated_taxonomy]
+    COLLAPSE[kotlin_outer_host_class 折叠]
+    NODES[nodes]
+    EDGES[edges]
+    PROJ[projection.harmony]
   end
   in --> COLLAPSE
   TAX --> NODES
   COLLAPSE --> NODES
   NAV --> EDGES
   SPEC --> NODES
-  GT --> NODES
   SF --> NODES
+  UFX --> NODES
+  FSYM --> NODES
+  CG --> EDGES
   NODES --> PROJ
   EDGES --> PROJ
 ```
 
 **实现要点**：
 
-1. **screen 节点**：自 `navigation_graph.nodes`；`type` 映射到 `screen` + 元数据（layout、activity/dialog）。
-2. **合成类折叠**：规则同现有 [`is_synthetic_kotlin_class`](../stages/_util.py)；子类合并到宿主 `node_id`，边重写端点。
-3. **feature 节点**：优先由可选 taxonomy YAML 匹配；其余屏幕由确定性挖掘聚类得到 `logical_feature_id`，`parent_of` 连到 `product_root`。
-4. **UI 子树**：按 `layout` / spec 文件名关联到最近 screen（启发式：类名↔layout 映射表来自 `navigation_graph.class_layouts`）。
-5. **behavior / implementation**：遍历 `source_findings.findings` 下各列表，按 `file` 路径推断所属模块与最近 screen（包前缀、目录 `activity/`、`dialog/` 等规则）；**行号**必填。
+1. **screen 节点**：来自 `navigation_graph` 的节点与边端点；宿主类名经 [`kotlin_outer_host_class`](../stages/_util.py) 折叠 Kotlin 合成类。
+2. **feature 节点**：**无捆绑默认 taxonomy**。先用 `--taxonomy` / `--taxonomy-overlay` 的 YAML 规则做「首条命中」分配；其余屏幕由 [`mine_generated_taxonomy`](../stages/feature_taxonomy_miner.py) 基于类名/layout/包路径 token + 导航邻接做确定性聚类。`taxonomy_report.json` 的 `source` 取值包括 `generated_taxonomy`、`explicit_taxonomy`、`generated+explicit_taxonomy`、`none`。
+3. **feature/screen 边 `source` 字段**：显式规则 → `explicit_taxonomy`；挖掘生成 → `generated_taxonomy`；未归入任何 feature 的 screen → 仍由 `product_root` `parent_of` 连接，`source` 为 `taxonomy_unmatched_screen`。
+4. **导航边**：自 `navigation_graph.edges`，映射 `rel`（见 §4.2），附带 `via` / `trigger` / `line` 等保留可追溯字段。
+5. **UI 子树**：遍历 `0_android_facts/specs/*_spec.json`，挂 `ui_surface` / `ui_control`，`owns_ui` 连到对应 screen（类名与 spec `class` 对齐并折叠）。
+6. **behavior**：遍历 **`ui_effect_paths.json`**（须含 `source_file` 与 `line`）；`enters` 连到 **`function_symbols.json`** 解析到的入口符号；`triggers` 连到宿主 screen；`logical_feature_id` 取自解析到的目标 screen 所属 feature。
+7. **implementation**：遍历 **`source_findings.json`** → `implementation` 节点；与 screen / `function_symbol` 的连边见 §4.2。
+8. **calls**：自 **`call_graph.json`**，两端符号均在图中存在时添加 `function_symbol` 之间的 `calls` 边。
+9. **projection.harmony**：当 Stage 3 已生成且传入 `harmony_arch.v1.json` 时，按 screen 尝试挂载 route 占位；缺映射时 `gap_ref`（如 `UNMAPPED_ROUTE`、Compose 低保真叠加）。
 
 ---
 
@@ -231,11 +272,15 @@ flowchart TB
 
 默认 stage 顺序是 `0,1,2,3,5,4,7`。Viewer 不再默认生成，避免最终交付混入人类浏览用 artifact。
 
-### 6.2 CLI
+### 6.2 CLI（节选）
 
-- `python pipeline.py --android-root ... --out ...`
-- `python pipeline.py --android-root ... --out ... --stages 5,7` 在已有 `intermediate/0_android_facts` 与 `intermediate/1_android_facts` 时快速刷新 feature tree + agent bundle。
-- `python pipeline.py --android-root ... --out ... --stages 0,1,2,3,5,6` 显式生成 debug viewer。
+- `python pipeline.py --android-root PATH [--out DIR]` — 默认 `--stages 0,1,2,3,5,4,7`。
+- `--stages 5,7` — 在已有 `0_android_facts`、`1_android_facts` 下刷新功能树与 bundle（Stage 7 仍会校验 Stage 2/3 产物是否存在；完整刷新通常带 `2,3`）。
+- `--taxonomy PATH` / `--taxonomy-overlay PATH`（可重复）— Stage 5 可选显式功能域规则（**无默认 bundled YAML**）。
+- `--facts-source DIR` — 拷贝预置 facts 到 `0_android_facts`，跳过 spec-tools（测试与离线场景）。
+- `--skip-spec-tools` — 复用已有 spec-tools `output/`。
+- `--emit-scaffold-files` — Stage 4 写入 `4_scaffold/` 而非仅 stdout。
+- `--stages ...,6` — 导出 `<out>/viewer/`（依赖 toolkit [`viewer/`](../viewer/) 目录完整）。
 
 ---
 
@@ -243,34 +288,37 @@ flowchart TB
 
 ### 7.1 原则
 
-- **单文件**：下游 agent 默认只读 `agent_bundle.v1.json`。
-- **结构化**：JSON 字段稳定，不能退化为 Markdown 汇总。
-- **可追溯**：`feature_tree` 保留完整节点/边；`evidence`、`verification`、`taxonomy`、`framework_mapping` 作为同文件上下文。
-- **可复现**：`intermediate_manifest` 记录中间 artifact 的相对路径、字节数和 sha256。
+- **单文件入口**：Agent 默认从 `agent_bundle.v1.json` 读摘要与大纲；**全图在单独文件中**，避免 bundle 体积失控。
+- **结构化**：字段符合 `schemas/agent_bundle.v1.schema.json`，通过 `jsonschema` 校验。
+- **可追溯**：`outline.artifacts` 指针 + `intermediate_manifest.artifacts` 体量（`bytes`）；需要拓扑时打开 `feature_tree.v1.json`。
+- **hints**：`agent_hints` 给出推荐阅读顺序（artifacts 路径、`verification`、`gap` 等）。
 
 ### 7.2 Agent 消费建议
 
-| 字段 | 用途 |
+| 位置 | 用途 |
 |------|------|
-| `feature_tree.nodes/edges` | 迁移任务主图，按 `kind`、`rel` 过滤 |
-| `evidence` | feature 到 source anchors 的索引 |
-| `verification` | 静态分析告警、缺失证据、unresolved calls |
-| `taxonomy` | feature 分类覆盖与 unmatched screens |
-| `harmony_projection` | HarmonyOS bundle/module/ability/route 占位 |
-| `framework_mapping.gap_items` | 需要 LLM/人工补全的迁移 gap |
-| `android_summary` | manifest、模块、导航、UI path 覆盖摘要 |
-| `intermediate_manifest` | 调试时定位可复现中间文件 |
+| `outline.artifacts.feature_tree` | **迁移主图**路径 → `feature_tree.v1.json` |
+| `outline.artifacts.evidence` | `feature_spec_evidence.json` |
+| `outline.artifacts.verification` | `verify_report.json` |
+| `outline.artifacts.taxonomy` | `taxonomy_report.json` |
+| `outline.artifacts.harmony_projection` | `harmony_arch.v1.json` |
+| `outline.artifacts.framework_mapping` | `framework_map.v1.json`（含 `gap_items`） |
+| `outline.artifacts.android_facts` | `android_facts.v1.json` |
+| `outline.features` | 快速浏览 feature 列表（非全图） |
+| `meta.feature_tree` | 节点/边计数与 `coverage` 摘要 |
+| `intermediate_manifest` | 列出 `intermediate/` 下文件的相对路径与 `bytes` |
 
 ---
 
 ## 8. 可选可视化设计（Viewer）
 
-### 8.1 原则
+### 8.1 原则与前置条件
 
-- 确定性：固定 **viewer 模板版本** + vendor 内置 **vis-network**（推荐），不运行时拉「latest」CDN。
-- 主图数据：**仅** `intermediate/5_feature_tree/feature_tree.v1.json` 或 viewer 目录下拷贝的 `feature_tree.v1.json`。
-- **侧车**：`framework_map_sidecar.json`（`gap_items` + `rules_version`）、`harmony_arch_sidecar.json`（abilities/routes 缩略），可选加载。
-- Viewer 仅供人工评审/debug；不是默认交付，也不是 agent 的主输入。
+- 确定性：使用 toolkit 内固定 **HTML 模板** + 本地 **`vendor/vis-network.min.js`**（不依赖运行时 CDN）。
+- **前置条件**：仓库中必须存在 [`viewer/feature_tree.html`](../viewer/feature_tree.html) 与 [`viewer/vendor/`](../viewer/vendor/)；缺失时 Stage 6 会在拷贝阶段失败。
+- 主图数据：导出时复制的 **`feature_tree.v1.json`**（同源 `intermediate/5_feature_tree/`）。
+- **侧车**：同目录 `taxonomy_report.json`、`feature_spec_evidence.json`、`verify_report.json`；以及可选 `framework_map_sidecar.json`、`harmony_arch_sidecar.json`（由导出脚本从对应 IR 裁剪生成）。
+- Viewer 仅供人工评审 / debug；不是默认交付，也不是 Agent 主输入。
 
 ### 8.2 布局：顶栏 + 三栏
 
@@ -301,11 +349,14 @@ flowchart TB
 ```
 viewer/
   feature_tree.html
-  feature_tree.v1.json              # 可拷贝自 intermediate/5_feature_tree/
-  framework_map_sidecar.json        # 可选
-  harmony_arch_sidecar.json         # 可选
+  feature_tree.v1.json              # 与 intermediate/5_feature_tree 同源拷贝
+  taxonomy_report.json              # sidecar（与 intermediate/5_feature_tree 同源）
+  feature_spec_evidence.json
+  verify_report.json
+  framework_map_sidecar.json        # 可选（来自 framework_map 裁剪）
+  harmony_arch_sidecar.json         # 可选（来自 harmony_arch 裁剪）
   README_viewer.txt
-  vendor/vis-network.min.js           # 推荐内置
+  vendor/vis-network.min.js         # 随仓库提供
 ```
 
 **生成**：`pipeline.py --stages ...,6` 或 `stages/export_feature_tree_view.py --tree ... --out viewer/`。
@@ -338,29 +389,38 @@ viewer/
 
 ## 11. Schema 与测试
 
-### 11.1 Schema 文件
+### 11.1 Schema 文件（流水线校验）
 
-- 新增：`schemas/feature_tree.v1.schema.json`（`nodes`、`edges`、`rel` 枚举、`projection` 结构）。
-- 新增：`schemas/agent_bundle.v1.schema.json`（最终 agent bundle 顶层结构与 intermediate manifest）。
+[`schemas/`](../schemas/) 下 JSON Schema Draft **2020-12**，均由 [`pipeline.py`](../pipeline.py) 在写出对应产物后校验：
+
+| Schema | 校验对象 |
+|--------|----------|
+| `android_facts.v1.schema.json` | Stage 1 |
+| `framework_map.v1.schema.json` | Stage 2 |
+| `harmony_arch.v1.schema.json` | Stage 3 |
+| `feature_tree.v1.schema.json` | Stage 5（含 `function_symbol`、`calls`、`enters` 等） |
+| `agent_bundle.v1.schema.json` | Stage 7 |
+
+`intermediate_manifest` 当前为每个文件记录 **`bytes`**（未写入 sha256；若需完整性校验可在后续版本扩展）。
 
 ### 11.2 测试
 
-- 扩展 `fixtures/minimal_facts`：最小 spec + `event_registration`；
-- `pytest`：跑默认 pipeline，断言 `agent_bundle.v1.json` 存在、`intermediate/` 布局正确、默认不生成 `viewer/`。
-- 显式 stage 6 测试 viewer 仍可生成。
+- `fixtures/minimal_android` + `fixtures/minimal_facts`：最小端到端。
+- `pytest tests/test_pipeline.py`：全默认 stage 不含 6 时 **不生成** `viewer/`；断言 bundle 内 **`feature_tree` 键不存在**（全图仅经 artifact 引用）。
+- Stage 6 测试需在 **viewer 资源齐全** 的检出环境中运行；否则拷贝步骤可能失败。
 
 ---
 
-## 12. 分阶段实现清单
+## 12. 实现状态与后续（对照清单）
 
-| 阶段 | 内容 |
-|------|------|
-| **P0** | Schema + `build_feature_tree.py` 骨架（仅 `product_root` + `screen` + `navigates_to`/`presents_modal` 边 from navigation_graph + 折叠） |
-| **P1** | taxonomy + `feature` 节点；UI 子树从 spec；manifest 修复 |
-| **P2** | `behavior` + `implementation` 锚点；与 `harmony_arch` 联动 |
-| **P3** | `export_agent_bundle.py` + `agent_bundle.v1.schema.json` + `intermediate/` 布局 |
-| **P4** | 可选 `export_feature_tree_view.py` + vendor + 三栏 UI |
-| **P5** | 侧车 gap、最短路径、PNG（按需） |
+| 阶段 | 内容 | 状态（截至文档日期） |
+|------|------|----------------------|
+| **P0** | `feature_tree.v1` Schema + `build_feature_tree`：`product_root`、`screen`、导航边、合成类折叠 | 已实现 |
+| **P1** | `feature` 节点；确定性生成 taxonomy + 可选 YAML；spec UI 子树；Gradle/manifest 解析 | 已实现 |
+| **P2** | `behavior`（`ui_effect_paths`）、`implementation`、`function_symbol` + `calls`；`harmony_arch` 投影 | 已实现 |
+| **P3** | `export_agent_bundle.py`、bundle Schema、`outline` + artifact 引用 | 已实现 |
+| **P4** | `export_feature_tree_view.py`、静态 HTML、vendor | 已实现（依赖仓库带齐 `viewer/`） |
+| **P5** | 侧车增强、大图交互、最短路径、PNG 导出等 | 按需迭代 |
 
 ---
 
@@ -374,8 +434,12 @@ Cursor 内计划文件（如 `VerifyFix/.cursor/plans/功能树_ir_扩展_31d9ac
 
 | 组件 | 路径 |
 |------|------|
-| 现有流水线 | [pipeline.py](../pipeline.py) |
-| Stage0 | [stages/stage0_run_spec_tools.py](../stages/stage0_run_spec_tools.py) |
+| 流水线入口 | [pipeline.py](../pipeline.py) |
+| Stage 0 | [stages/stage0_run_spec_tools.py](../stages/stage0_run_spec_tools.py) |
 | Android facts | [stages/build_android_facts.py](../stages/build_android_facts.py) |
+| 功能树构建 | [stages/build_feature_tree.py](../stages/build_feature_tree.py) |
+| 生成 taxonomy | [stages/feature_taxonomy_miner.py](../stages/feature_taxonomy_miner.py) |
+| 显式 taxonomy YAML | [stages/feature_tree_taxonomy.py](../stages/feature_tree_taxonomy.py) |
 | Agent bundle | [stages/export_agent_bundle.py](../stages/export_agent_bundle.py) |
+| Viewer 导出 | [stages/export_feature_tree_view.py](../stages/export_feature_tree_view.py) |
 | 工具根 README | [README.md](../README.md) |
