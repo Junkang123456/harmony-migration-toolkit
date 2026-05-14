@@ -1,0 +1,59 @@
+# Build standalone pipeline bundles (PyInstaller one-folder + zip) per OS.
+name: Release binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - feat/android-facts-navigation-ui-hardening
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            shell: pwsh
+            artifact: harmony-migration-toolkit-windows-amd64.zip
+          - os: macos-latest
+            shell: bash
+            artifact: harmony-migration-toolkit-macos.zip
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+
+      - name: PyInstaller build
+        run: python -m PyInstaller packaging/pipeline.spec --noconfirm
+
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if (Test-Path dist/${{ matrix.artifact }}) { Remove-Item dist/${{ matrix.artifact }} -Force }
+          Compress-Archive -Path dist/harmony-migration-toolkit -DestinationPath dist/${{ matrix.artifact }}
+
+      - name: Zip (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          rm -f "dist/${{ matrix.artifact }}"
+          cd dist && zip -qr "${{ matrix.artifact }}" harmony-migration-toolkit
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
