@@ -90,7 +90,7 @@ bundle **不嵌入**全量 `nodes`/`edges`；全图请读 `outline.artifacts.fea
 
 - **`meta.feature_tree`**：`node`/`edge` 计数、`nodes_by_kind`、`edges_by_rel`、`coverage` 等摘要。
 - **`outline.features`**：按 feature 的精简列表（条数上限约 256），含 `taxonomy_source`、`top_tokens`、`representative_screens` 等。
-- **`outline.app`**：manifest、Gradle 模块、`navigation_summary`、`ui_fidelity`、Stage0 `artifact_checks`、`ui_paths_legacy` 计数等。
+- **`outline.app`**：manifest、Gradle 模块、`navigation_summary`、`ui_fidelity`、Stage0 `artifact_checks`、`ui_paths_legacy` 计数等。`ui_paths_legacy` 为 **探索链**与 **合格单步 legacy 文案** 的去重并集（大型工程中静态 DAG 深层链少时仍保有覆盖面），详见 Stage0 `ui_paths_display_quality_report.json` 的 `policy` 与 `summary`。
 - **`outline.artifacts.*`**：指向 `intermediate/...` 各 JSON，含 `bytes` 字段便于体量感知。
 
 ---

@@ -1,0 +1,8 @@
+{
+  "nav_rules_version": "1",
+  "handler_anchor_suffixes": ["Handler", "Delegate", "Launcher", "Navigator"],
+  "overlay_relative_paths": [
+    ".spec-tools/navigation_overlay.v1.json",
+    "tools/navigation_overlay.v1.json"
+  ]
+}

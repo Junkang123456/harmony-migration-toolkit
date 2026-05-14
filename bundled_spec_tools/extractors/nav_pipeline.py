@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+from bisect import bisect_right
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +31,7 @@ _PRINT_MEDIA_FALLBACK_PATH = (
 _DOCUMENT_PICKER_CATALOG_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "android_document_picker_roots.v1.json"
 )
+_STRING_LABEL_INDEX_CACHE: dict[int, list[tuple[set[str], str, int]]] = {}
 
 
 def load_nav_rules() -> dict:
@@ -135,7 +137,13 @@ def gather_kt_sources(project_root: str, dep_roots: list[str] | None) -> list[tu
     items: list[tuple[Path, str, str, str]] = []
     root = Path(project_root)
 
+    def _is_generated_or_build_file(path: Path) -> bool:
+        parts = {p.lower() for p in path.parts}
+        return bool(parts & {"build", "generated", "intermediates", ".gradle"})
+
     for src_file in android_project.source_files(root):
+        if _is_generated_or_build_file(src_file):
+            continue
         rel = android_project.relative_to_root(src_file, root)
         items.append(
             (
@@ -150,6 +158,8 @@ def gather_kt_sources(project_root: str, dep_roots: list[str] | None) -> list[tu
         dep_root = Path(dep)
         dep_name = dep_root.name
         for src_file in android_project.source_files(dep_root):
+            if _is_generated_or_build_file(src_file):
+                continue
             rel = f"{dep_name}/{android_project.relative_to_root(src_file, dep_root)}"
             items.append(
                 (
@@ -188,6 +198,33 @@ _ASSIGN_INTENT_TARGET = re.compile(
     re.MULTILINE,
 )
 
+# Java: Intent intent = new Intent(context, TargetActivity.class);
+_ASSIGN_INTENT_TARGET_JAVA = re.compile(
+    r"(?:Intent\s+)?(\w+)\s*=\s*new\s+Intent\s*\([^,)]+,\s*(\w+)\.class\s*\)",
+    re.MULTILINE,
+)
+
+# Java/Kotlin helper method that returns an Intent containing a concrete target:
+#   private static Intent getMainActivityInNewStack(...) { ... new Intent(ctx, Foo.class) ... }
+_HELPER_INTENT_METHOD = re.compile(
+    r"(?:private|public|protected|static|\s)+"
+    r"(?:static\s+)?Intent\s+(\w+)\s*\([^)]*\)[^{]*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}",
+    re.MULTILINE | re.DOTALL,
+)
+
+# Kotlin override fun createFragment(pos: Int): Fragment { return FooFragment() }
+_ADAPTER_CREATE_FRAGMENT_KT = re.compile(
+    r"override\s+fun\s+(?:createFragment|getItem)\s*\([^)]*\)[^{]*\{[^}]*\breturn\s+(\w+)\s*[\(\.]",
+    re.MULTILINE,
+)
+
+# Java @Override public Fragment createFragment(int pos) { return new FooFragment(); }
+_ADAPTER_CREATE_FRAGMENT_JAVA = re.compile(
+    r"@Override\s*\n?\s*public\s+(?:Fragment\b[^(]*|androidx\.fragment\.app\.Fragment\s+)"
+    r"(?:createFragment|getItem)\s*\([^)]*\)\s*\{[^}]*\breturn\s+new\s+(\w+)\s*\(",
+    re.MULTILINE | re.DOTALL,
+)
+
 _PRINT_SERVICE = re.compile(
     r"(?:getSystemService\s*\(\s*Context\.PRINT_SERVICE|PrintManager\b)",
     re.MULTILINE,
@@ -212,6 +249,18 @@ def _line_for(source: str, pos: int) -> int:
     return source[:pos].count("\n") + 1
 
 
+def _enclosing_function_before(source: str, pos: int) -> str:
+    """Best-effort Kotlin/Java function name before a source position."""
+    context = source[max(0, pos - 4000) : pos]
+    fn_name = ""
+    for match in re.finditer(
+        r"(?:private|public|protected|internal)?\s*(?:override\s+)?(?:suspend\s+)?fun\s+(\w+)",
+        context,
+    ):
+        fn_name = match.group(1)
+    return fn_name
+
+
 def _window(source: str, pos: int, max_len: int = 1800) -> str:
     return source[pos : pos + max_len]
 
@@ -226,6 +275,60 @@ def _display_from_class(name: str) -> str:
     return " ".join(words) or base
 
 
+def _resolve_screen_class(from_class: str, nav_graph: dict) -> str:
+    """Resolve a builder/provider class to the nearest screen class via camelCase word-prefix matching.
+
+    Uses word-level prefix matching (not character-level) to find the screen class
+    that shares the longest common prefix of camelCase words with `from_class`.
+    Accepts a match if the common prefix covers at least 2 words OR at least 50%
+    of the shorter name's words. Prefers Activity/Fragment/Dialog classes as tiebreaker.
+    Returns empty string if no match is found (caller falls back to _display_from_class).
+    """
+    if not from_class or not nav_graph:
+        return ""
+    screen_set = set(nav_graph.get("class_layouts", {}).keys())
+    if from_class in screen_set:
+        return from_class
+
+    from_words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+", from_class)
+    if not from_words:
+        return ""
+
+    best = ""
+    best_score = 0
+    best_proportion = 0.0
+    best_is_screen = False
+
+    for cls in screen_set:
+        if cls == from_class:
+            continue
+        cls_words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+", cls)
+        if not cls_words:
+            continue
+        score = 0
+        for a, b in zip(from_words, cls_words):
+            if a == b:
+                score += 1
+            else:
+                break
+        if score < 1:
+            continue
+        shorter_len = min(len(from_words), len(cls_words))
+        proportion = score / shorter_len if shorter_len else 0
+        if score < 2 and proportion < 0.5:
+            continue
+        is_screen = cls.endswith("Activity") or cls.endswith("Fragment") or cls.endswith("Dialog")
+        if (score > best_score or
+            (score == best_score and proportion > best_proportion) or
+            (score == best_score and proportion == best_proportion and is_screen and not best_is_screen)):
+            best_score = score
+            best_proportion = proportion
+            best = cls
+            best_is_screen = is_screen
+
+    return best
+
+
 def _display_from_function(name: str) -> str:
     base = re.sub(r"^(?:show|open|display)", "", name)
     return _display_from_class(base or name)
@@ -233,8 +336,111 @@ def _display_from_function(name: str) -> str:
 
 def _resource_label(label_key: str, strings: dict[str, str] | None) -> str:
     if strings and label_key in strings:
-        return strings[label_key]
+        val = strings[label_key]
+        m = re.match(r"^@string/(\w+)$", val)
+        if m and m.group(1) in strings:
+            return strings[m.group(1)]
+        return val
     return label_key.replace("_", " ").title()
+
+
+def _words_from_identifier(value: str) -> set[str]:
+    parts = re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+", value)
+    if not parts:
+        parts = re.split(r"[^a-zA-Z0-9]+", value)
+    stop = {
+        "activity", "adapter", "builder", "card", "fragment", "handler", "helper",
+        "item", "items", "list", "model", "screen", "state", "use", "view",
+        "viewmodel",
+    }
+    return {p.lower() for p in parts if p and p.lower() not in stop}
+
+
+def _infer_source_area_label(
+    class_name: str,
+    rel: str,
+    strings: dict[str, str] | None,
+) -> str:
+    """Infer a user-visible area label from generic source/class words and string keys."""
+    if not strings:
+        return ""
+    source_words = _words_from_identifier(class_name)
+    source_words.update(_words_from_identifier(Path(rel).stem))
+    rel_parts = Path(rel).parts
+    for part in rel_parts[-4:]:
+        source_words.update(_words_from_identifier(part))
+    if not source_words:
+        return ""
+    source_compact = re.sub(r"[^a-z0-9]+", "", f"{class_name} {Path(rel).as_posix()}".lower())
+
+    cache_key = id(strings)
+    if cache_key not in _STRING_LABEL_INDEX_CACHE:
+        index: list[tuple[set[str], str, int]] = []
+        for key, value in strings.items():
+            if not isinstance(value, str) or not value.strip() or value.startswith("@"):
+                continue
+            key_words = _words_from_identifier(key)
+            if not key_words:
+                continue
+            bonus = 0
+            if any(w in key_words for w in ("section", "screen")):
+                bonus += 4
+            elif "tab" in key_words:
+                bonus += 1
+            elif "title" in key_words:
+                bonus += 1
+            if len(value.split()) <= 4:
+                bonus += 1
+            index.append((key_words, value, bonus))
+        _STRING_LABEL_INDEX_CACHE[cache_key] = index
+
+    best_label = ""
+    best_score = 0
+    for key_words, value, bonus in _STRING_LABEL_INDEX_CACHE[cache_key]:
+        if not (key_words & {"section", "screen", "tab"}):
+            continue
+        overlap = len(source_words & key_words)
+        compact_hits = 0
+        ordered_words = [w for w in key_words if w not in {"title", "section", "tab", "screen"}]
+        for idx in range(len(ordered_words) - 1):
+            if f"{ordered_words[idx]}{ordered_words[idx + 1]}" in source_compact:
+                compact_hits += 2
+        if overlap <= 0 and compact_hits <= 0:
+            continue
+        score = overlap + compact_hits + bonus
+        if score > best_score:
+            best_score = score
+            best_label = value
+    return best_label if best_score >= 3 else ""
+
+
+def _infer_user_context_parts(source: str, pos: int, strings: dict[str, str] | None) -> list[str]:
+    """Infer nearby user-visible section labels before a dynamic item group."""
+    context = source[max(0, pos - 2200) : pos]
+    header_keys: list[str] = []
+    for match in re.finditer(
+        r"\b(?:Category|Section|Header)\w*\s*\([^)]*?R\.string\.(\w+)",
+        context,
+    ):
+        header_keys.append(match.group(1))
+    if header_keys:
+        label = _resource_label(header_keys[-1], strings).strip()
+        return [label] if label else []
+
+    keys: list[str] = []
+    patterns = (
+        r"\b(?:build\w*(?:Header|Title|SubHeader|ActionButton)\w*|setTitle|title|text|label)\s*\([^)]*?R\.string\.(\w+)",
+        r"\b(?:titleRes|textRes|labelRes|contentDescRes)\s*=\s*R\.string\.(\w+)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, context):
+            keys.append(match.group(1))
+    labels: list[str] = []
+    for key in keys[-4:]:
+        label = _resource_label(key, strings).strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels[-2:]
 
 
 def _render_option_label(template: str, var_name: str, raw_value: str, strings: dict[str, str] | None) -> str:
@@ -268,6 +474,8 @@ def _extract_text_template(block: str, var_name: str) -> str:
 def _has_clickable_option_signal(block: str) -> bool:
     if re.search(r"\b(onClick|onCheckedChange|onValueChange)\s*=", block):
         return True
+    if re.search(r"\b(CheckboxState|ToggleState|ActionButtonState)\s*\(", block):
+        return True
     if ".clickable" in block or "setOnClickListener" in block:
         return True
     # Trailing lambda after a composable call, and the lambda is not just rendering Text.
@@ -281,6 +489,128 @@ def _option_group_id(file: str, line: int, label: str) -> str:
     return "og:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _short_type_name(type_name: str) -> str:
+    return (type_name or "").strip().split(".")[-1]
+
+
+def _function_parameter_model(source: str, pos: int, param_name: str) -> str:
+    """Return the model type for a function parameter visible at `pos`."""
+    fallback = ""
+    for m in re.finditer(r"\bfun\s+\w+\s*\(", source):
+        open_pos = m.end() - 1
+        close_pos = _matching_close_pos(source, open_pos, max_len=4000)
+        if close_pos < 0 or close_pos > pos:
+            continue
+        params = source[open_pos + 1 : close_pos]
+        param_match = re.search(
+            rf"\b{re.escape(param_name)}\s*:\s*(?:List|MutableList|Collection|Iterable)\s*<\s*([\w.]+)\s*>",
+            params,
+        )
+        if not param_match:
+            param_match = re.search(rf"\b{re.escape(param_name)}\s*:\s*([\w.]+)", params)
+        if not param_match:
+            continue
+        model = _short_type_name(param_match.group(1))
+        fallback = model
+        brace_pos = source.find("{", close_pos, min(len(source), close_pos + 1000))
+        if brace_pos < 0:
+            continue
+        end_pos = _matching_close_pos(source, brace_pos, open_ch="{", close_ch="}", max_len=30000)
+        if end_pos < 0 or brace_pos <= pos <= end_pos:
+            return model
+    return fallback
+
+
+def _provider_label_access(block: str, var_name: str) -> bool:
+    return bool(
+        re.search(rf"\b{re.escape(var_name)}\.(?:labelResId|titleResId|stringResId|textResId)\b", block)
+        or "UiStringRes(" in block
+    )
+
+
+def _option_effect_kind_from_block(block: str) -> str:
+    if re.search(r"\b(CheckboxState|ToggleState)\s*\(", block) or "onCheckedChange" in block:
+        return "state_toggle"
+    return "option_select"
+
+
+def _checked_default_from_block(block: str) -> str:
+    m = re.search(r"\bchecked\s*=\s*(true|false)\b", block)
+    return m.group(1) if m else ""
+
+
+def _collect_provider_option_catalog(
+    sources: list[tuple[Path, str, str, str]],
+    strings: dict[str, str] | None,
+) -> dict[str, list[dict]]:
+    """
+    Cross-file catalog for provider functions returning List<Model> via listOf(Model(... R.string ...)).
+    """
+    by_model: dict[str, list[dict]] = {}
+    for _path, source, class_name, rel in sources:
+        for fn in re.finditer(
+            r"\bfun\s+(\w+)\s*\([^)]*\)\s*:\s*(?:List|MutableList|Collection|Iterable)\s*<\s*([\w.]+)\s*>\s*\{",
+            source,
+        ):
+            provider_fn = fn.group(1)
+            model = _short_type_name(fn.group(2))
+            body = _balanced_curly_block(source, fn.end() - 1, max_len=20000)
+            if "listOf" not in body:
+                continue
+            items: list[dict] = []
+            for call in re.finditer(rf"\b{re.escape(model)}\s*\(", body):
+                args = _balanced_block(body, call.end() - 1, max_len=4000)
+                string_keys = re.findall(r"R\.string\.(\w+)", args)
+                if not string_keys:
+                    continue
+                label_key = string_keys[0]
+                hint_key = string_keys[1] if len(string_keys) > 1 else ""
+                items.append(
+                    {
+                        "label_key": label_key,
+                        "label": _resource_label(label_key, strings),
+                        "hint_key": hint_key,
+                        "hint": _resource_label(hint_key, strings) if hint_key else "",
+                    }
+                )
+            if not items:
+                continue
+            line = _line_for(source, fn.start())
+            by_model.setdefault(model, []).append(
+                {
+                    "id": _option_group_id(rel, line, f"{provider_fn}:{model}"),
+                    "kind": "provider_option_catalog",
+                    "effect": "report_candidate",
+                    "from_class": class_name,
+                    "provider_function": provider_fn,
+                    "model_class": model,
+                    "items_source": "provider_return_list",
+                    "options": [str(item.get("label") or "") for item in items if item.get("label")],
+                    "items": items,
+                    "file": rel.replace("\\", "/"),
+                    "line": line,
+                    "confidence": "source",
+                    "evidence": f"{provider_fn}(): List<{model}> -> listOf({model}(... R.string ...))",
+                }
+            )
+    return by_model
+
+
+def _provider_catalog_for_param(
+    provider_catalogs: dict[str, list[dict]],
+    source: str,
+    pos: int,
+    param_name: str,
+) -> tuple[dict | None, str, int]:
+    model = _function_parameter_model(source, pos, param_name)
+    if not model:
+        return None, "", 0
+    catalogs = provider_catalogs.get(model, [])
+    if len(catalogs) == 1:
+        return catalogs[0], model, 1
+    return None, model, len(catalogs)
+
+
 def collect_dynamic_option_groups(
     project_root: str,
     dep_roots: list[str] | None,
@@ -290,75 +620,134 @@ def collect_dynamic_option_groups(
     groups: list[dict] = []
     sources = gather_kt_sources(project_root, dep_roots)
     enum_models = _extract_enum_property_models(sources)
+    provider_catalogs = _collect_provider_option_catalog(sources, strings)
     for _path, source, class_name, rel in sources:
         option_sources = _collect_static_option_sources(source)
         enum_projection_sources = _collect_enum_projection_sources(source, enum_models)
         for src_name, src_info in enum_projection_sources.items():
             option_sources[src_name] = list(src_info.get("options", []))
-        if not option_sources:
-            continue
 
         for m in re.finditer(
             r"\b(\w+)\s*\.\s*(?:map|forEach)\s*\{\s*(\w+)(?:\s*->)?",
             source,
         ):
-            src_name, var_name = m.group(1), m.group(2)
+            src_name = m.group(1)
+            var_name = m.group(2) if "->" in m.group(0) else "it"
             values = option_sources.get(src_name)
-            if not values:
-                continue
             brace_pos = source.find("{", m.start())
             block = _balanced_curly_block(source, brace_pos, max_len=5000)
+            items_source = "source_static_collection"
+            provider_meta: dict = {}
+            if not values:
+                provider, _model, _count = _provider_catalog_for_param(
+                    provider_catalogs, source, m.start(), src_name
+                )
+                if provider and _provider_label_access(block, var_name):
+                    values = list(provider.get("options") or [])
+                    provider_meta = dict(provider)
+                    items_source = "provider_return_list"
+            if not values:
+                continue
             if not _has_clickable_option_signal(block):
                 continue
             template = _extract_text_template(block, var_name)
             options = [_render_option_label(template, var_name, v, strings) for v in values]
             line = _line_for(source, m.start())
-            groups.append(
-                {
+            row = {
                     "id": _option_group_id(rel, line, src_name),
                     "kind": "dynamic_option_group",
                     "effect": "report_candidate",
                     "from_class": class_name,
                     "source_name": src_name,
-                    "items_source": "source_static_collection",
+                    "items_source": items_source,
                     "options": options,
+                    "option_effect_kind": _option_effect_kind_from_block(block),
+                    "checked_default": _checked_default_from_block(block),
                     "file": rel.replace("\\", "/"),
                     "line": line,
                     "confidence": "source",
                     "evidence": f"{src_name}.map/forEach -> clickable option group",
-                }
-            )
+            }
+            inferred_parts = _infer_user_context_parts(source, m.start(), strings)
+            if inferred_parts:
+                row["path_parts"] = inferred_parts
+            if provider_meta:
+                row.update(
+                    {
+                        "provider_catalog_id": provider_meta.get("id", ""),
+                        "provider_function": provider_meta.get("provider_function", ""),
+                        "model_class": provider_meta.get("model_class", ""),
+                        "provider_file": provider_meta.get("file", ""),
+                        "provider_line": provider_meta.get("line", 0),
+                        "provider_items": provider_meta.get("items", []),
+                    }
+                )
+                row["evidence"] = (
+                    f"{src_name}.map/forEach bound to "
+                    f"{provider_meta.get('provider_function', '')}(): List<{provider_meta.get('model_class', '')}>"
+                )
+            groups.append(row)
 
         for m in re.finditer(
             r"\bitems\s*\(\s*(\w+)\s*\)\s*\{\s*(\w+)(?:\s*->)?",
             source,
         ):
-            src_name, var_name = m.group(1), m.group(2)
+            src_name = m.group(1)
+            var_name = m.group(2) if "->" in m.group(0) else "it"
             values = option_sources.get(src_name)
-            if not values:
-                continue
             brace_pos = source.find("{", m.start())
             block = _balanced_curly_block(source, brace_pos, max_len=5000)
+            items_source = "source_static_collection"
+            provider_meta = {}
+            if not values:
+                provider, _model, _count = _provider_catalog_for_param(
+                    provider_catalogs, source, m.start(), src_name
+                )
+                if provider and _provider_label_access(block, var_name):
+                    values = list(provider.get("options") or [])
+                    provider_meta = dict(provider)
+                    items_source = "provider_return_list"
+            if not values:
+                continue
             if not _has_clickable_option_signal(block):
                 continue
             template = _extract_text_template(block, var_name)
             options = [_render_option_label(template, var_name, v, strings) for v in values]
             line = _line_for(source, m.start())
-            groups.append(
-                {
+            row = {
                     "id": _option_group_id(rel, line, src_name),
                     "kind": "dynamic_option_group",
                     "effect": "report_candidate",
                     "from_class": class_name,
                     "source_name": src_name,
-                    "items_source": "source_static_collection",
+                    "items_source": items_source,
                     "options": options,
+                    "option_effect_kind": _option_effect_kind_from_block(block),
+                    "checked_default": _checked_default_from_block(block),
                     "file": rel.replace("\\", "/"),
                     "line": line,
                     "confidence": "source",
                     "evidence": f"items({src_name}) -> clickable option group",
-                }
-            )
+            }
+            inferred_parts = _infer_user_context_parts(source, m.start(), strings)
+            if inferred_parts:
+                row["path_parts"] = inferred_parts
+            if provider_meta:
+                row.update(
+                    {
+                        "provider_catalog_id": provider_meta.get("id", ""),
+                        "provider_function": provider_meta.get("provider_function", ""),
+                        "model_class": provider_meta.get("model_class", ""),
+                        "provider_file": provider_meta.get("file", ""),
+                        "provider_line": provider_meta.get("line", 0),
+                        "provider_items": provider_meta.get("items", []),
+                    }
+                )
+                row["evidence"] = (
+                    f"items({src_name}) bound to "
+                    f"{provider_meta.get('provider_function', '')}(): List<{provider_meta.get('model_class', '')}>"
+                )
+            groups.append(row)
 
         for m in re.finditer(
             r"\b(setSingleChoiceItems|setItems|setMultiChoiceItems)\s*\(\s*(\w+)\s*,[\s\S]{0,600}?\)\s*\{",
@@ -394,11 +783,66 @@ def collect_dynamic_option_groups(
     return groups
 
 
+def collect_provider_option_catalogs(
+    project_root: str,
+    dep_roots: list[str] | None,
+    strings: dict[str, str] | None = None,
+) -> list[dict]:
+    sources = gather_kt_sources(project_root, dep_roots)
+    catalogs_by_model = _collect_provider_option_catalog(sources, strings)
+    return [catalog for catalogs in catalogs_by_model.values() for catalog in catalogs]
+
+
+def collect_provider_option_binding_diagnostics(
+    project_root: str,
+    dep_roots: list[str] | None,
+) -> list[dict]:
+    sources = gather_kt_sources(project_root, dep_roots)
+    provider_catalogs = _collect_provider_option_catalog(sources, None)
+    rows: list[dict] = []
+    for _path, source, class_name, rel in sources:
+        for m in re.finditer(
+            r"\b(\w+)\s*\.\s*(?:map|forEach)\s*\{\s*(\w+)(?:\s*->)?",
+            source,
+        ):
+            src_name = m.group(1)
+            var_name = m.group(2) if "->" in m.group(0) else "it"
+            brace_pos = source.find("{", m.start())
+            block = _balanced_curly_block(source, brace_pos, max_len=5000)
+            if not _provider_label_access(block, var_name) or not _has_clickable_option_signal(block):
+                continue
+            _provider, model, count = _provider_catalog_for_param(
+                provider_catalogs, source, m.start(), src_name
+            )
+            if not model or count == 1:
+                continue
+            line = _line_for(source, m.start())
+            rows.append(
+                {
+                    "id": _candidate_id("dynamic_option_group_unresolved_param", rel, line, src_name + model),
+                    "kind": "dynamic_option_group_unresolved_param",
+                    "effect": "unknown",
+                    "from_class": class_name,
+                    "source_name": src_name,
+                    "model_class": model,
+                    "provider_match_count": count,
+                    "file": rel.replace("\\", "/"),
+                    "line": line,
+                    "evidence": f"{src_name}.map/forEach uses {model} labels but provider catalog match count is {count}",
+                }
+            )
+    return rows
+
+
 def _extract_action_token(text: str) -> str:
     m = re.search(r"\bonClick\s*=\s*\{[\s\S]{0,500}?\b(\w+)\s*\(", text)
     if m:
         return m.group(1)
     m = _ACTION_TOKEN.search(text)
+    if m:
+        return m.group(1)
+    # onClick = SomeClass.method(TOKEN, ...) — used by ListItemInteraction.create() patterns
+    m = re.search(r"\bonClick\s*=\s*(?:\w+\.)*\w+\s*\(\s*(\w+)", text)
     if m:
         return m.group(1)
     # Kotlin trailing lambda shorthand: { onClicked(Foo) } is covered above;
@@ -417,6 +861,7 @@ def _enclosing_function_name(source: str, pos: int) -> str:
 def collect_ui_action_bindings(
     project_root: str,
     dep_roots: list[str] | None,
+    strings: dict[str, str] | None = None,
 ) -> list[dict]:
     """Generic L1: label resource bound to a code action token."""
     rows: list[dict] = []
@@ -425,8 +870,9 @@ def collect_ui_action_bindings(
             item_type, label_key = m.group(1), m.group(2)
             if item_type.endswith("SettingItem"):
                 continue
-            win = _window(source, m.start())
-            token = _extract_action_token(win)
+            open_pos = source.find("(", m.start(), m.end())
+            item_body = _balanced_block(source, open_pos) if open_pos >= 0 else ""
+            token = _extract_action_token(item_body)
             if not token:
                 continue
             line = _line_for(source, m.start())
@@ -444,6 +890,13 @@ def collect_ui_action_bindings(
                     "file": rel.replace("\\", "/"),
                     "line": line,
                     "evidence": f"{item_type}(R.string.{label_key}) -> {token}",
+                    "context_parts": [
+                        p for p in [
+                            _infer_source_area_label(class_name, rel, strings),
+                            *_infer_user_context_parts(source, m.start(), strings),
+                        ]
+                        if p
+                    ],
                 }
             )
     return rows
@@ -1086,6 +1539,47 @@ def _extract_functions(source: str) -> dict[str, str]:
         if name in functions:
             continue
         functions[name] = _balanced_curly_block(source, m.end() - 1)
+    java_block_re = re.compile(
+        r"(?:public|private|protected|static|final|synchronized|native|\s)+"
+        r"[\w<>\[\].?,\s]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w.,\s]+)?\{"
+    )
+    for m in java_block_re.finditer(source):
+        name = m.group(1)
+        if name in functions or name in {"if", "for", "while", "switch", "catch"}:
+            continue
+        functions[name] = _balanced_curly_block(source, m.end() - 1)
+    return functions
+
+
+def _extract_functions_near(
+    source: str,
+    signal_re: re.Pattern,
+) -> dict[str, str]:
+    """Extract only functions enclosing direct UI/navigation signals."""
+    functions: dict[str, str] = {}
+    fn_re = re.compile(
+        r"(?:[\w@]+\s+)*fun\s+(\w+)\s*\([^)]*\)[^{=]*\{|"
+        r"(?:public|private|protected|static|final|synchronized|\s)+"
+        r"[\w<>\[\].?,\s]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w.,\s]+)?\{"
+    )
+    fn_matches = list(fn_re.finditer(source))
+    if not fn_matches:
+        return functions
+    starts = [m.start() for m in fn_matches]
+    for signal in signal_re.finditer(source):
+        idx = bisect_right(starts, signal.start()) - 1
+        if idx < 0:
+            continue
+        last_match = fn_matches[idx]
+        if signal.start() - last_match.start() > 12000:
+            continue
+        name = last_match.group(1) or last_match.group(2)
+        if not name or name in functions or name in {"if", "for", "while", "switch", "catch"}:
+            continue
+        brace_pos = source.find("{", last_match.end() - 1, min(len(source), last_match.end() + 1000))
+        if brace_pos < 0:
+            continue
+        functions[name] = _balanced_curly_block(source, brace_pos, max_len=12000)
     return functions
 
 
@@ -1121,9 +1615,27 @@ def _classify_effect_body(
     m = re.search(r"startActivity(?:ForResult)?\s*\([^)]*?Intent\([^,]*,\s*(\w+)::class", body)
     if m:
         return {"effect_kind": "activity", "target": m.group(1)}
+    m = re.search(r"new\s+Intent\s*\([^,]*,\s*(\w+)\.class\s*\)", body)
+    if m and "startActivity" in body:
+        return {"effect_kind": "activity", "target": m.group(1)}
+    m = re.search(r"Intent\s*\([^,]*,\s*(\w+)::class\.java\s*\)", body)
+    if m and "startActivity" in body:
+        return {"effect_kind": "activity", "target": m.group(1)}
     m = re.search(r"startActivity(?:ForResult)?\s*\(\s*(\w+)\.createIntent\s*\(", body)
     if m:
         return {"effect_kind": "activity", "target": m.group(1)}
+
+    m = re.search(r"\b(?:\w+\.)?([A-Z]\w+)\s*\([^)]*\)", body)
+    if m and not re.search(r"\b(?:Intent|Bundle|Event|LiveData|MutableLiveData)\b", m.group(1)):
+        # Generic sealed-class / action-object construction. A later branch or
+        # helper with the same token may resolve this to a concrete UI target.
+        return {"effect_kind": "dispatched_action", "target_action": m.group(1)}
+    m = re.search(r"\b(?:\w+\.)+([A-Z]\w+)\b", body)
+    if m:
+        return {"effect_kind": "dispatched_action", "target_action": m.group(1)}
+    m = re.search(r"\b\w+\.(\w+)\s*\(", body)
+    if m:
+        return {"effect_kind": "dispatched_action", "target_action": m.group(1)}
 
     m = re.search(r"\bdispatch\s*\(\s*(?:\w+\.)?(\w+)(?:\s*\([^)]*\))?", body)
     if m:
@@ -1164,16 +1676,25 @@ def collect_action_effects(
     """Map generic action tokens to their resolved effect."""
     sources = gather_kt_sources(project_root, dep_roots)
     function_effects: dict[str, dict] = {}
-    for _path, source, _class_name, _rel in sources:
-        for fn_name, body in _extract_functions(source).items():
+    direct_effect_signal = re.compile(
+        r"startActivity|Intent\s*\(|new\s+Intent|\.createIntent\s*\(|Dialog|BottomSheet|"
+        r"PrintManager|ACTION_OPEN_DOCUMENT|ACTION_GET_CONTENT|ACTION_CREATE_DOCUMENT|"
+        r"FilePicker|toggle\w*\s*\("
+    )
+    effect_sources = [
+        item for item in sources
+        if direct_effect_signal.search(item[1])
+    ]
+    for _path, source, _class_name, _rel in effect_sources:
+        for fn_name, body in _extract_functions_near(source, direct_effect_signal).items():
             function_effects[fn_name] = _classify_effect_body(body)
 
     # Second pass lets expression-body functions resolve local helper calls.
-    for _path, source, _class_name, _rel in sources:
-        for fn_name, body in _extract_functions(source).items():
+    for _path, source, _class_name, _rel in effect_sources:
+        for fn_name, body in _extract_functions_near(source, direct_effect_signal).items():
             function_effects[fn_name] = _classify_effect_body(body, function_effects)
 
-    action_effects: dict[str, dict] = {}
+    action_effects: dict[str, dict] = dict(function_effects)
     for _path, source, class_name, rel in sources:
         action_effects.update(_collect_named_lambda_effects(source, class_name, rel, function_effects))
 
@@ -1246,27 +1767,39 @@ def _path_row(
     source_file: str,
     line: int,
     action_token: str = "",
+    context_parts: list[str] | None = None,
+    expose_user_click: bool = False,
 ) -> dict:
     parts = [root_label]
-    if container_label and container_label != root_label:
+    if context_parts:
+        for part in context_parts:
+            if part and part not in parts:
+                parts.append(part)
+    elif container_label and container_label != root_label:
         parts.append(container_label)
     parts.append(label)
     target = str(effect.get("target") or "")
     effect_kind = str(effect.get("effect_kind") or "unknown")
     if target and effect_kind in ("dialog", "activity"):
         parts.append(_display_from_class(target))
+    resolved_target_ui = bool(target and effect_kind in ("dialog", "activity"))
+    resolved_ui = resolved_target_ui or bool(expose_user_click and label and effect_kind == "navigate")
     return {
         "path_id": _effect_path_id(parts, effect_kind, source_file, line),
         "path_display_legacy": " > ".join(parts),
         "path_display_report": " › ".join(parts),
+        "path_parts": parts,
         "effect_kind": effect_kind,
         "label_key": label_key,
         "label": label,
         "action_token": action_token,
         "target": target,
+        "target_class": target if resolved_target_ui else "",
         "source_file": source_file,
         "line": line,
-        "report_only": True,
+        "report_only": not resolved_ui,
+        "display_channel": "ui" if resolved_ui else "evidence",
+        "user_visible": resolved_ui,
     }
 
 
@@ -1280,10 +1813,12 @@ def _option_path_row(
 ) -> dict:
     all_parts = [root_label] + [p for p in parts if p and p != root_label] + [option]
     raw = "|".join(all_parts + [str(group.get("file", "")), str(group.get("line", 0)), source])
+    resolved_ui = bool(group.get("path_parts"))
     return {
         "path_id": "ep:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16],
         "path_display_legacy": " > ".join(all_parts),
         "path_display_report": " › ".join(all_parts),
+        "path_parts": all_parts,
         "effect_kind": group.get("option_effect_kind", "option_select"),
         "label_key": "",
         "label": option,
@@ -1291,7 +1826,9 @@ def _option_path_row(
         "target": "",
         "source_file": group.get("file", ""),
         "line": int(group.get("line") or 0),
-        "report_only": True,
+        "report_only": not resolved_ui,
+        "display_channel": "ui" if resolved_ui else "evidence",
+        "user_visible": resolved_ui,
         "option_group_id": group.get("id", ""),
         "items_source": group.get("items_source", ""),
         "catalog_source": group.get("catalog_source", ""),
@@ -1385,6 +1922,7 @@ def build_ui_effect_paths(
     dep_roots: list[str] | None,
     strings: dict[str, str] | None,
     launcher_class: str = "",
+    nav_graph: dict | None = None,
 ) -> dict:
     """Build report-only effect paths for code/Compose menus and settings DSL."""
     strings = strings or {}
@@ -1394,16 +1932,26 @@ def build_ui_effect_paths(
     option_groups.extend(collect_compose_control_option_groups(project_root, dep_roots, strings))
     setting_option_groups = collect_setting_option_groups(project_root, dep_roots, strings)
     print_media_catalog = load_android_print_media_size_catalog()
-    ui_bindings = collect_ui_action_bindings(project_root, dep_roots)
+    ui_bindings = collect_ui_action_bindings(project_root, dep_roots, strings)
     rows: list[dict] = []
 
     for binding in ui_bindings:
         token = str(binding.get("action_token") or "")
         effect = _resolve_action_effect(token, action_effects)
-        if effect.get("effect_kind") in ("unknown", "dispatched_action"):
+        item_type = str(binding.get("item_type") or "")
+        is_list_item = item_type.endswith("Item")
+        if effect.get("effect_kind") in ("unknown", "dispatched_action") and not is_list_item:
             continue
+        if effect.get("effect_kind") in ("unknown", "dispatched_action") and is_list_item:
+            effect = {"effect_kind": "navigate", "source_class": binding.get("from_class", "")}
         source_class = str(binding.get("from_class") or "")
-        container = _display_from_class(source_class) if "Dialog" in source_class else ""
+        if "Dialog" in source_class:
+            container = _display_from_class(source_class)
+        elif is_list_item:
+            resolved = _resolve_screen_class(source_class, nav_graph) if nav_graph else ""
+            container = _display_from_class(resolved) if resolved else _display_from_class(source_class)
+        else:
+            container = ""
         label = _resource_label(str(binding.get("label_key") or ""), strings)
         rows.append(
             _path_row(
@@ -1415,6 +1963,8 @@ def build_ui_effect_paths(
                 source_file=str(binding.get("file") or ""),
                 line=int(binding.get("line") or 0),
                 action_token=token,
+                context_parts=list(binding.get("context_parts") or []),
+                expose_user_click=True,
             )
         )
         if effect.get("effect_kind") == "system_print":
@@ -1551,7 +2101,9 @@ def build_ui_effect_paths(
             )
 
     for group in option_groups:
-        container = _display_from_class(str(group.get("from_class") or ""))
+        from_class = str(group.get("from_class") or "")
+        resolved = _resolve_screen_class(from_class, nav_graph) if nav_graph else ""
+        container = _display_from_class(resolved) if resolved else _display_from_class(from_class)
         for option in group.get("options", []):
             rows.append(
                 _option_path_row(
@@ -1573,9 +2125,19 @@ def build_ui_effect_paths(
         unique.append(row)
 
     by_kind: dict[str, int] = {}
+    by_items_source: dict[str, int] = {}
     for row in unique:
         kind = row.get("effect_kind", "unknown")
         by_kind[kind] = by_kind.get(kind, 0) + 1
+        if row.get("items_source"):
+            src = str(row.get("items_source"))
+            by_items_source[src] = by_items_source.get(src, 0) + 1
+    provider_rows = [row for row in unique if row.get("items_source") == "provider_return_list"]
+    provider_groups = {
+        str(row.get("option_group_id") or "")
+        for row in provider_rows
+        if row.get("option_group_id")
+    }
 
     return {
         "schema_version": "1.0",
@@ -1585,7 +2147,16 @@ def build_ui_effect_paths(
             "note": "Bytecode may confirm constants/callbacks, but report labels require source or string resources.",
         },
         "path_count": len(unique),
-        "stats": {"by_effect_kind": by_kind},
+        "stats": {
+            "by_effect_kind": by_kind,
+            "by_items_source": by_items_source,
+            "provider_option_group_count": len(provider_groups),
+            "provider_option_item_count": len(provider_rows),
+            "legacy_excluded_dynamic_option_count": sum(
+                1 for row in unique
+                if row.get("items_source") == "provider_return_list" and row.get("user_visible") is False
+            ),
+        },
         "paths": unique,
     }
 
@@ -1618,12 +2189,24 @@ def collect_navigation_candidates(
                 }
             )
 
+        # Pre-build a map of helper-method-name → target class for this source file.
+        # Covers patterns like: private static Intent getXxxActivity(ctx) { … new Intent(ctx, Foo.class) … }
+        _helper_target_cache: dict[str, str] = {}
+        for hm in _HELPER_INTENT_METHOD.finditer(source):
+            method_name = hm.group(1)
+            body = hm.group(2)
+            java_m = _ASSIGN_INTENT_TARGET_JAVA.search(body)
+            if java_m:
+                _helper_target_cache[method_name] = java_m.group(2)
+
         for m in _VAR_START_ACTIVITY.finditer(source):
             var = m.group(1)
             if var in _SKIP_VAR_NAMES or not var:
                 continue
             line = source[: m.start()].count("\n") + 1
             window = source[max(0, m.start() - 4000) : m.start()]
+
+            # ── Kotlin: val x = Intent(..., Target::class.java) ──────────────
             assign_pat = re.compile(
                 rf"(?:val|var)\s+{re.escape(var)}\s*=\s*Intent\s*\(\s*[^,]*,\s*(\w+)::class\.java",
                 re.MULTILINE,
@@ -1643,17 +2226,75 @@ def collect_navigation_candidates(
                         "evidence": f"startActivity({var}) with Intent(..., {target}::class.java)",
                     }
                 )
-            else:
+                continue
+
+            # ── Java: Intent intent = new Intent(context, Target.class) ──────
+            java_assign_pat = re.compile(
+                rf"(?:Intent\s+)?{re.escape(var)}\s*=\s*new\s+Intent\s*\([^,)]+,\s*(\w+)\.class\s*\)",
+                re.MULTILINE,
+            )
+            java_matches = list(java_assign_pat.finditer(window))
+            if java_matches:
+                target = java_matches[-1].group(1)
                 candidates.append(
                     {
-                        "id": _candidate_id("unresolved_start_activity", rel, line, var),
-                        "kind": "unresolved_start_activity",
-                        "effect": "unknown",
+                        "id": _candidate_id("local_intent_var_java", rel, line, var + target),
+                        "kind": "local_intent_var",
+                        "effect": "navigating_resolvable",
                         "from_class": class_name,
-                        "to_class": None,
+                        "to_class": target,
                         "file": rel.replace("\\", "/"),
                         "line": line,
-                        "evidence": f"startActivity({var})",
+                        "evidence": f"startActivity({var}) with new Intent(..., {target}.class)",
+                    }
+                )
+                continue
+
+            # ── Helper method: var = getXxxActivity(ctx); startActivity(var) ─
+            if var in _helper_target_cache:
+                target = _helper_target_cache[var]
+                candidates.append(
+                    {
+                        "id": _candidate_id("helper_intent_call", rel, line, var + target),
+                        "kind": "helper_intent_call",
+                        "effect": "navigating_resolvable",
+                        "from_class": class_name,
+                        "to_class": target,
+                        "file": rel.replace("\\", "/"),
+                        "line": line,
+                        "evidence": f"startActivity({var}) via helper → new Intent(..., {target}.class)",
+                    }
+                )
+                continue
+
+            candidates.append(
+                {
+                    "id": _candidate_id("unresolved_start_activity", rel, line, var),
+                    "kind": "unresolved_start_activity",
+                    "effect": "unknown",
+                    "from_class": class_name,
+                    "to_class": None,
+                    "file": rel.replace("\\", "/"),
+                    "line": line,
+                    "evidence": f"startActivity({var})",
+                }
+            )
+
+        # ── FragmentStateAdapter / FragmentPagerAdapter → child Fragments ─────
+        for pat in (_ADAPTER_CREATE_FRAGMENT_KT, _ADAPTER_CREATE_FRAGMENT_JAVA):
+            for m in pat.finditer(source):
+                frag_class = m.group(1)
+                line = source[: m.start()].count("\n") + 1
+                candidates.append(
+                    {
+                        "id": _candidate_id("adapter_fragment_child", rel, line, class_name + frag_class),
+                        "kind": "adapter_fragment_child",
+                        "effect": "navigating_resolvable",
+                        "from_class": class_name,
+                        "to_class": frag_class,
+                        "file": rel.replace("\\", "/"),
+                        "line": line,
+                        "evidence": f"createFragment/getItem returns {frag_class}",
                     }
                 )
 
@@ -1674,7 +2315,9 @@ def collect_navigation_candidates(
 
     candidates.extend(collect_ui_action_bindings(project_root, dep_roots))
     candidates.extend(collect_setting_action_bindings(project_root, dep_roots))
+    candidates.extend(collect_provider_option_catalogs(project_root, dep_roots))
     candidates.extend(collect_dynamic_option_groups(project_root, dep_roots))
+    candidates.extend(collect_provider_option_binding_diagnostics(project_root, dep_roots))
     candidates.extend(collect_compose_control_option_groups(project_root, dep_roots))
     candidates.extend(collect_setting_option_groups(project_root, dep_roots))
     if any(c.get("kind") == "system_print" for c in candidates):
@@ -1719,6 +2362,23 @@ def collect_navigation_candidates(
                 "evidence": "ACTION_OPEN_DOCUMENT/ACTION_GET_CONTENT/ACTION_CREATE_DOCUMENT -> DocumentsUI catalog",
             }
         )
+
+    # ── Filter out candidates whose to_class is clearly a non-screen class ──
+    # These suffixes identify infrastructure classes that are never navigable
+    # screens: ViewModel, Helper, Repository, Manager, UseCase, Provider,
+    # Adapter, Binding, Factory, Dao.
+    _NON_SCREEN_SUFFIXES = (
+        "ViewModel", "Helper", "Repository", "Manager", "UseCase",
+        "Provider", "Adapter", "Binding", "Factory", "Dao",
+    )
+    candidates = [
+        c for c in candidates
+        if not (
+            c.get("to_class")
+            and any(c["to_class"].endswith(s) for s in _NON_SCREEN_SUFFIXES)
+        )
+    ]
+
     return candidates
 
 
@@ -1732,6 +2392,7 @@ def extract_l2_create_intent_edges(
     for m in _CREATE_INTENT_START.finditer(source):
         target = m.group(1)
         line = source[: m.start()].count("\n") + 1
+        enclosing_fn = _enclosing_function_before(source, m.start())
         edges.append(
             {
                 "from": class_name,
@@ -1740,8 +2401,12 @@ def extract_l2_create_intent_edges(
                 "type": "activity",
                 "via": "startActivity(createIntent)",
                 "trigger": f"l2:createIntent:L{line}",
+                "trigger_kind": "l2_create_intent",
+                "display_source": "synthetic_navigation",
+                "user_visible": False,
                 "line": line,
                 "source_file": rel_file.replace("\\", "/"),
+                "enclosing_fn": enclosing_fn,
             }
         )
     return edges
@@ -1768,6 +2433,7 @@ def extract_l2_variable_intent_edges(
         if not matches:
             continue
         target = matches[-1].group(1)
+        enclosing_fn = _enclosing_function_before(source, m.start())
         edges.append(
             {
                 "from": class_name,
@@ -1776,8 +2442,12 @@ def extract_l2_variable_intent_edges(
                 "type": "activity",
                 "via": "startActivity(local Intent)",
                 "trigger": f"l2:localIntent:L{line}",
+                "trigger_kind": "l2_local_intent",
+                "display_source": "synthetic_navigation",
+                "user_visible": False,
                 "line": line,
                 "source_file": rel_file.replace("\\", "/"),
+                "enclosing_fn": enclosing_fn,
             }
         )
     return edges
@@ -1821,6 +2491,9 @@ def merge_overlay_edges(
         sf = e.get("source_file") or e.get("file")
         if sf:
             row["source_file"] = str(sf).replace("\\", "/")
+        for key in ("trigger_kind", "display_source", "user_visible", "display_label", "enclosing_fn"):
+            if key in e:
+                row[key] = e[key]
         out.append(row)
     return out
 
@@ -1877,6 +2550,9 @@ def apply_launcher_anchor_edges(
         }
         if sf := e.get("source_file"):
             neo["source_file"] = sf
+        for key in ("trigger_kind", "display_source", "user_visible", "display_label", "enclosing_fn"):
+            if key in e:
+                neo[key] = e[key]
         k = _edge_key(neo)
         if k not in existing:
             existing.add(k)
@@ -1892,12 +2568,29 @@ def build_candidates_payload(
     rules = rules or load_nav_rules()
     cands = collect_navigation_candidates(project_root, dep_roots)
     by_kind: dict[str, int] = {}
+    by_items_source: dict[str, int] = {}
     for c in cands:
         by_kind[c.get("kind", "?")] = by_kind.get(c.get("kind", "?"), 0) + 1
+        if c.get("items_source"):
+            src = str(c.get("items_source"))
+            by_items_source[src] = by_items_source.get(src, 0) + 1
+    provider_catalogs = [c for c in cands if c.get("kind") == "provider_option_catalog"]
+    provider_option_groups = [
+        c for c in cands
+        if c.get("kind") == "dynamic_option_group" and c.get("items_source") == "provider_return_list"
+    ]
     return {
         "schema_version": "1.0",
         "nav_pipeline_version": NAV_PIPELINE_VERSION,
         "nav_rules_version": str(rules.get("nav_rules_version", "0")),
-        "stats": {"total": len(cands), "by_kind": by_kind},
+        "stats": {
+            "total": len(cands),
+            "by_kind": by_kind,
+            "by_items_source": by_items_source,
+            "provider_option_catalog_count": len(provider_catalogs),
+            "provider_option_group_count": len(provider_option_groups),
+            "provider_option_item_count": sum(len(c.get("options") or []) for c in provider_option_groups),
+            "dynamic_option_group_unresolved_params": by_kind.get("dynamic_option_group_unresolved_param", 0),
+        },
         "candidates": cands,
     }

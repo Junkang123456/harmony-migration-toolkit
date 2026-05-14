@@ -325,8 +325,15 @@ def extract_visibility_controls(source: str, file_path: str) -> list[dict]:
 # ══════════════════════════════════════════════════════
 
 _LAYOUT_INFLATE_RE  = re.compile(r'inflate\s*\(\s*R\.layout\.(\w+)', re.MULTILINE)
-_BINDING_INFLATE_RE = re.compile(r'(\w+Binding)\.inflate\s*\(', re.MULTILINE)
-_BY_BINDING_RE      = re.compile(r'by\s+\w*[Bb]inding\w*\s*\(\s*(\w+Binding)\s*::', re.MULTILINE)
+_BINDING_INFLATE_RE  = re.compile(r'(\w+Binding)\.inflate\s*\(', re.MULTILINE)
+_BY_BINDING_RE       = re.compile(r'by\s+\w*[Bb]inding\w*\s*\(\s*(\w+Binding)\s*::', re.MULTILINE)
+_DATA_BINDING_RE     = re.compile(
+    r'DataBindingUtil\.(?:setContentView|inflate)\s*\([^,]+,\s*R\.layout\.(\w+)', re.MULTILINE
+)
+# Detect binding variable name from field declaration: val binding: XxxBinding or val binding = XxxBinding.inflate
+_BINDING_VARNAME_RE  = re.compile(
+    r'(?:private\s+)?(?:val|var)\s+(\w+)\s*(?::\s*\w+Binding|=\s*\w+Binding\.inflate)', re.MULTILINE
+)
 
 def extract_inflates(source: str, file_path: str) -> list[dict]:
     results = []
@@ -373,6 +380,18 @@ def extract_inflates(source: str, file_path: str) -> list[dict]:
             "layout":        _binding_class_to_layout(cls),
             "binding_class": cls,
             "enclosing_fn":  "class_level",
+        })
+
+    # DataBinding: DataBindingUtil.setContentView / .inflate
+    for m in _DATA_BINDING_RE.finditer(source):
+        layout_name = m.group(1)
+        results.append({
+            "kind":          "inflate_databinding",
+            "file":          file_path,
+            "line":          _line_of(source, m.start()),
+            "layout":        layout_name,
+            "binding_class": "",
+            "enclosing_fn":  _enclosing_fn(lines, _line_of(source, m.start()) - 1),
         })
 
     return results
@@ -507,6 +526,104 @@ def _extract_static_options(snippet: str) -> list[str]:
     # 最后尝试直接 getString(R.string.xxx) 模式
     options = _STRING_ITEM_RE.findall(list_body)
     return options
+
+
+# ══════════════════════════════════════════════════════
+# F. 运行时标签绑定（runtime label binding）
+#    检测 ViewBinding / findViewById 模式下的 .text = ... / setText(...) 调用，
+#    追踪实参来源：字符串字面量、R.string.xxx、或动态属性（标为 dynamic）。
+# ══════════════════════════════════════════════════════
+
+# Pattern: binding.viewId.text = expr  or  viewId.setText(expr)
+_TEXT_ASSIGN_RE = re.compile(
+    r'(?:'
+    r'(?:binding|viewBinding)\s*[\.\?]+\s*(\w+)\s*[\.\?]+\s*text\s*=\s*'
+    r'|'
+    r'(?:binding|viewBinding)\s*[\.\?]+\s*(\w+)\s*[\.\?]+\s*setText\s*\(\s*'
+    r'|'
+    r'(\w+)\s*\.\s*setText\s*\(\s*'
+    r'|'
+    r'(\w+Text|\w+Label|\w+Title|\w+Name|\w+Heading|\w+Header)\s*[\.\?]+\s*text\s*=\s*'
+    r')'
+    r'(.{3,120}?)'
+    r'(?:\s*\n|\s*\))',
+    re.MULTILINE,
+)
+
+# R.string.xxx reference
+_R_STRING_RE = re.compile(r'R\.string\.(\w+)')
+
+# String literal
+_STRING_LIT_RE = re.compile(r'"([^"]{1,120})"')
+
+
+def _resolve_label_source(expr: str, strings_map: dict | None = None) -> tuple[str, str, str]:
+    """
+    Given the RHS expression of a .text = / setText() call, classify it:
+      ("literal", "the string", "")             — string literal
+      ("resource", "resolved text", "key")      — R.string.key (resolved if map provided)
+      ("dynamic", "item.title", "")             — runtime property
+    Returns (source_type, resolved_text, resource_key).
+    """
+    expr = expr.strip().rstrip(")")
+
+    lit = _STRING_LIT_RE.search(expr)
+    if lit:
+        return ("literal", lit.group(1), "")
+
+    res = _R_STRING_RE.search(expr)
+    if res:
+        key = res.group(1)
+        resolved = (strings_map or {}).get(key, key.replace("_", " ").title())
+        return ("resource", resolved, key)
+
+    return ("dynamic", expr[:80], "")
+
+
+def extract_runtime_label_bindings(
+    source: str,
+    file_path: str,
+    strings_map: dict | None = None,
+) -> list[dict]:
+    """
+    F. Extract runtime label bindings — cases where a view's text is set
+    programmatically rather than via XML android:text.
+
+    For each match, record:
+      - view_id: the binding property name (camelCase → snake_case mapping happens later)
+      - label_source: "literal" | "resource" | "dynamic"
+      - label_text: resolved text (for literal/resource) or raw expression (for dynamic)
+      - enclosing_fn: function containing the assignment
+    """
+    results = []
+    lines = source.splitlines()
+
+    for m in _TEXT_ASSIGN_RE.finditer(source):
+        view_ref = m.group(1) or m.group(2) or m.group(3) or m.group(4) or ""
+        expr = m.group(5).strip()
+
+        if not view_ref or not expr:
+            continue
+
+        view_id = _camel_to_snake(view_ref)
+        source_type, resolved, res_key = _resolve_label_source(expr, strings_map)
+
+        line_idx = _line_of(source, m.start())
+        enclosing = _enclosing_fn(lines, line_idx - 1)
+
+        results.append({
+            "kind": "runtime_label_binding",
+            "file": file_path,
+            "line": line_idx,
+            "view_ref": view_ref,
+            "view_id": view_id,
+            "label_source": source_type,
+            "label_text": resolved,
+            "resource_key": res_key,
+            "enclosing_fn": enclosing,
+        })
+
+    return results
 
 
 def extract_data_driven_ui(source: str, file_path: str,
@@ -657,6 +774,7 @@ def run(project_root: str, file_prefix: str = "",
         "visibility_controls": [],
         "inflates":          [],
         "data_driven_ui":    [],
+        "runtime_label_bindings": [],
     }
 
     for src in src_files:
@@ -675,6 +793,9 @@ def run(project_root: str, file_prefix: str = "",
         findings["visibility_controls"].extend(extract_visibility_controls(source, rel))
         findings["inflates"].extend(extract_inflates(source, rel))
         findings["data_driven_ui"].extend(extract_data_driven_ui(source, rel, constants))
+        findings["runtime_label_bindings"].extend(
+            extract_runtime_label_bindings(source, rel)
+        )
 
     enriched_count = _enrich_findings_with_symbols(findings, project_root, file_prefix=file_prefix)
     stats = {k: len(v) for k, v in findings.items()}

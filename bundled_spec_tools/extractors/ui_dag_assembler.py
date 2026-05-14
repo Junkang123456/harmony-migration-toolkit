@@ -31,11 +31,26 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from extractors.app_model_schema import build_path_record, ui_point_id
+from extractors.app_model_schema import (
+    build_path_record,
+    exploration_legacy_join,
+    is_exploration_legacy_segment,
+    ui_point_id,
+)
+
+
+_FACTS_DIR: Path | None = None
+
+
+def set_facts_dir(path: str | Path | None) -> None:
+    """Point the assembler at the current scan output directory."""
+    global _FACTS_DIR
+    _FACTS_DIR = Path(path).resolve() if path else None
 
 
 def _load_json(name: str) -> dict:
-    p = Path(__file__).parent.parent / "output" / name
+    base = _FACTS_DIR or (Path(__file__).parent.parent / "output")
+    p = base / name
     if p.exists():
         return json.loads(p.read_text(encoding="utf-8"))
     return {}
@@ -108,6 +123,40 @@ def _match_trigger_to_element(trigger: str, element_id: str) -> bool:
     return False
 
 
+_LIFECYCLE_TRIGGER_RE = re.compile(
+    r"^fn:\s*(onCreateView|onViewCreated|onResume|onStart|onCreate|onAttach|init)\b",
+    re.IGNORECASE,
+)
+_TARGET_STRIP_PREFIXES = ("show",)
+_TARGET_STRIP_SUFFIXES = ("BottomSheet", "Dialog", "Fragment", "Activity")
+
+
+def _match_dialog_target_to_element(target_class: str, element_id: str) -> bool:
+    """Secondary match: strip 'show' prefix and type suffixes from target class name,
+    then check if the normalized root is a substring of the element id.
+
+    Used as a fallback when trigger is a lifecycle method (fn: onCreateView etc.)
+    that can't be correlated to a specific view by name, but the target dialog name
+    encodes enough information to identify the owning container.
+
+    Example: showPostExcerptDialog → postexcerpt → found in postexcerptcontainer
+    """
+    if not target_class or not element_id:
+        return False
+    name = target_class
+    for pfx in _TARGET_STRIP_PREFIXES:
+        if name.lower().startswith(pfx) and len(name) > len(pfx):
+            name = name[len(pfx):]
+            break
+    for sfx in _TARGET_STRIP_SUFFIXES:
+        if name.endswith(sfx) and len(name) > len(sfx):
+            name = name[: -len(sfx)]
+            break
+    normalized = name.lower().replace("_", "")
+    eid = element_id.lower().replace("_", "")
+    return bool(normalized) and normalized in eid
+
+
 def _get_gap_items_for_layout(layout: str, gap_data: dict) -> list[dict]:
     items = []
     for r in gap_data.get("resolved", []):
@@ -148,7 +197,10 @@ def _build_element_node(
     nav_target = None
     for edge in nav_edges:
         trigger = edge.get("trigger", "")
-        if _match_trigger_to_element(trigger, eid):
+        matched = _match_trigger_to_element(trigger, eid)
+        if not matched and _LIFECYCLE_TRIGGER_RE.match(trigger):
+            matched = _match_dialog_target_to_element(edge.get("to", ""), eid)
+        if matched:
             nav_target = {
                 "target_class": edge["to"],
                 "target_layout": edge.get("to_layout", ""),
@@ -213,6 +265,10 @@ def _collect_unmatched_nav_edges(
         if trigger:
             for elem in elements:
                 if _match_trigger_to_element(trigger, elem.get("id", "")):
+                    matched = True
+                    break
+                if _LIFECYCLE_TRIGGER_RE.match(trigger) and \
+                        _match_dialog_target_to_element(edge.get("to", ""), elem.get("id", "")):
                     matched = True
                     break
         if not matched:
@@ -488,9 +544,39 @@ def _is_path_element(elem: dict, layout_elements: Optional[list] = None) -> bool
     return False
 
 
+def _infer_label_from_sibling(eid: str, layout_text_map: dict) -> str:
+    """
+    Given an element id like ``feature_enabled``, search layout_text_map for a
+    same-prefix sibling that carries static text (e.g. ``feature_title``,
+    ``feature_label``, ``feature_name``).
+
+    The caller already checked that the element itself has no own text.
+    Returns "" if no sibling text found.
+    """
+    if not eid or "_" not in eid:
+        return ""
+
+    parts = eid.rsplit("_", 1)
+    if len(parts) != 2:
+        return ""
+    prefix = parts[0]
+
+    _SUFFIX_CANDIDATES = (
+        "_title", "_label", "_name", "_text", "_heading", "_header",
+        "Title", "Label", "Name", "Text", "Heading", "Header",
+    )
+    for suf in _SUFFIX_CANDIDATES:
+        candidate = prefix + suf
+        txt = layout_text_map.get(candidate, "")
+        if txt:
+            return txt
+    return ""
+
+
 def _resolve_label(
     elem: dict,
     layout_text_map: dict,   # element_id → resolved text string within the same layout
+    runtime_label_lookup: dict | None = None,
 ) -> str:
     """
     Resolve a human-readable label for the element.
@@ -498,7 +584,9 @@ def _resolve_label(
     Priority:
       1. Element's own text / content_desc (already resolved from @string by xml_extractor)
       2. For *_holder elements: look up sibling text element (strip _holder suffix)
-      3. Derive from element_id: snake_case → Title Case, strip common suffixes
+      3. Same-prefix sibling text (e.g. feature_enabled → feature_title's text)
+      4. Runtime label from source-code binding analysis (setText / .text = patterns)
+      5. Derive from element_id: snake_case → Title Case, strip common suffixes
     """
     # 1. Own text
     own = (elem.get("text") or elem.get("content_desc") or "").strip()
@@ -507,25 +595,38 @@ def _resolve_label(
 
     # 2. Sibling text for holder rows
     eid = elem.get("id", "")
+
     if eid.endswith("_holder"):
         base = eid[:-len("_holder")]
         sibling_text = layout_text_map.get(base, "")
         if sibling_text:
             return sibling_text
     elif eid.endswith("Holder"):
-        # camelCase variant
         base = eid[:-len("Holder")]
         sibling_text = layout_text_map.get(base, "")
         if sibling_text:
             return sibling_text
 
-    # 3. Derive from id
+    # 3. Same-prefix sibling text (e.g. feature_enabled → feature_title)
+    sibling_text = _infer_label_from_sibling(eid, layout_text_map)
+    if sibling_text:
+        return sibling_text
+
+    # 4. Runtime label from source-code binding analysis
+    if runtime_label_lookup:
+        rt = runtime_label_lookup.get(eid)
+        if rt:
+            return rt
+
+    # 5. Derive from id
     label = eid
-    for suffix in ("_holder", "_checkbox", "_switch", "_label", "_text", "_btn", "_button"):
+    for suffix in (
+        "_holder", "_checkbox", "_switch", "_label", "_text",
+        "_btn", "_button", "_enabled", "_toggle",
+    ):
         if label.endswith(suffix):
             label = label[:-len(suffix)]
             break
-    # Also strip common screen prefixes (settings_, dialog_, etc.)
     label = label.replace("_", " ").strip().title()
     return label
 
@@ -739,6 +840,27 @@ def _lookup_options(
     return None
 
 
+def _build_runtime_label_lookup(source_findings: dict) -> dict[str, str]:
+    """
+    Build a global view_id → resolved_text lookup from runtime_label_bindings.
+
+    Only includes entries with a statically resolvable label (source_type "literal"
+    or "resource").  Dynamic bindings are excluded — they are already flagged as
+    dynamic in the findings and handled by the sibling-prefix heuristic or
+    left as element_id-derived fallback.
+    """
+    bindings = (
+        source_findings
+        .get("findings", {})
+        .get("runtime_label_bindings", [])
+    )
+    lookup: dict[str, str] = {}
+    for b in bindings:
+        if b.get("label_source") in ("literal", "resource") and b.get("label_text"):
+            lookup[b["view_id"]] = b["label_text"]
+    return lookup
+
+
 def _screen_label(screen_class: str, layout: str) -> str:
     """
     Human-readable name for a screen node.
@@ -746,12 +868,21 @@ def _screen_label(screen_class: str, layout: str) -> str:
     """
     name = screen_class or layout
     for suffix in ("Activity", "Fragment", "Dialog"):
-        if name.endswith(suffix) and name != suffix:
-            name = name[:-len(suffix)]
+        if name.endswith(suffix):
+            if name != suffix:
+                name = name[:-len(suffix)]
+            else:
+                name = layout  # class name is bare suffix; fall back to layout stem
             break
     # Insert spaces before capitals (CamelCase → Title Case)
     spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
-    return spaced or layout
+    result = spaced or layout
+    # Capitalize first letter only when CamelCase expansion produced spaces
+    # (avoids turning layout-stem identifiers like "edit_post_settings_fragment" into
+    # "Edit_post_settings_fragment" which would bypass the LAYOUT_STEM_RE filter)
+    if result and result[0].islower() and " " in result:
+        result = result[0].upper() + result[1:]
+    return result
 
 
 def _screen_segment(layout: str, screen_class: str) -> dict[str, Any]:
@@ -760,6 +891,8 @@ def _screen_segment(layout: str, screen_class: str) -> dict[str, Any]:
         "layout": layout,
         "screen_class": screen_class,
         "label": _screen_label(screen_class, layout),
+        "display_role": "user_screen",
+        "display_source": "class_name" if screen_class else "layout_name",
     }
 
 
@@ -773,6 +906,8 @@ def _action_segment(
     resolved_label: str,
     trigger: Optional[str],
     virtual: bool,
+    user_visible: bool = True,
+    display_source: str = "ui",
 ) -> dict[str, Any]:
     tid = trigger or ""
     return {
@@ -785,13 +920,83 @@ def _action_segment(
         "resolved_label": resolved_label,
         "trigger": trigger,
         "virtual": virtual,
+        "user_visible": user_visible,
+        "display_source": display_source,
+        "display_role": "user_action" if user_visible and display_source == "ui" else "source_evidence",
         "ui_point_id": ui_point_id(layout, element_id, virtual=virtual, trigger=tid),
     }
 
 
+_L2_TRIGGER_RE = re.compile(r"^l2:(?:createintent|localintent):l\d+$", re.IGNORECASE)
+
+
+def _explicit_display_label(edge: dict) -> str:
+    for key in ("display_label", "ui_label", "label"):
+        value = str(edge.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _is_synthetic_trigger(trigger: str, edge: Optional[dict] = None) -> bool:
+    edge = edge or {}
+    if edge.get("user_visible") is False:
+        return True
+    if str(edge.get("display_source") or "") == "synthetic_navigation":
+        return True
+    if str(edge.get("trigger_kind") or "").startswith("l2_"):
+        return True
+    if _L2_TRIGGER_RE.match(trigger or ""):
+        return True
+    if (trigger or "").strip().lower() == "overlay" and not _explicit_display_label(edge):
+        return True
+    return False
+
+
+def _virtual_label_from_edge(edge: dict) -> tuple[str, str, bool]:
+    """Return (label, tag, user_visible) for a navigation-only UI action."""
+    trigger = str(edge.get("trigger") or "")
+    explicit = _explicit_display_label(edge)
+    if explicit:
+        return explicit, "virtual", True
+    if _is_synthetic_trigger(trigger, edge):
+        return "", "virtual", False
+
+    if trigger.startswith("menu "):
+        return trigger[5:].replace("_", " ").title(), "MenuItem", True
+    if trigger.startswith("menu:"):
+        return trigger[5:].strip().replace("_", " ").title(), "MenuItem", True
+    if trigger.startswith("click: ") or trigger.startswith("click "):
+        label = trigger.split(":", 1)[-1].strip().replace("_", " ").title()
+        return label, "virtual", bool(label)
+
+    # Function/setup names are source evidence, not stable user-facing UI text.
+    if trigger.startswith("fn: ") or trigger.startswith("setup: "):
+        return "", "virtual", False
+
+    # Derive label from class-style bottomnav triggers (e.g. bottomnav:EditPostSettingsFragment).
+    # Menu-ID style triggers (e.g. bottomnav:nav_sites) start with a lowercase letter — skip those;
+    # the display_label field (set by _extract_bottomnav_edges) already carries the resolved title.
+    if trigger.startswith("bottomnav:"):
+        class_part = trigger[len("bottomnav:"):]
+        if class_part and class_part[0].isupper():
+            label = re.sub(r"(?<=[a-z])(?=[A-Z])", " ",
+                           class_part.replace("Fragment", "")).strip()
+            if label:
+                return label, "Fragment", True
+
+    return "", "virtual", False
+
+
 def _branch_segment(value: str) -> dict[str, Any]:
     vk = re.sub(r"[^a-zA-Z0-9]+", "_", value.lower()).strip("_")[:80]
-    return {"kind": "branch", "value": value, "value_key": vk or "opt"}
+    return {
+        "kind": "branch",
+        "value": value,
+        "value_key": vk or "opt",
+        "display_role": "user_option",
+        "display_source": "ui",
+    }
 
 
 def _dest_screen_segment(dest_class: str, dest_layout: str) -> dict[str, Any]:
@@ -800,6 +1005,8 @@ def _dest_screen_segment(dest_class: str, dest_layout: str) -> dict[str, Any]:
         "layout": dest_layout or "",
         "screen_class": dest_class,
         "label": _screen_label(dest_class, dest_layout or ""),
+        "display_role": "user_screen",
+        "display_source": "class_name" if dest_class else "layout_name",
     }
 
 
@@ -825,6 +1032,8 @@ def _maybe_parameter_segment(
             "pattern": "input",
             "format_hint": "",
             "placeholder_display": "{input}",
+            "display_role": "user_option",
+            "display_source": "placeholder",
         }
     return None
 
@@ -861,6 +1070,7 @@ def assemble_flat_paths(start_layout: str, max_depth: int = 4) -> list[dict]:
 
     src_findings = _load_json("source_findings.json")
     data_driven_lookup = _build_data_driven_lookup(src_findings)
+    runtime_label_lookup = _build_runtime_label_lookup(src_findings)
 
     paths: list[dict] = []
 
@@ -900,7 +1110,10 @@ def assemble_flat_paths(start_layout: str, max_depth: int = 4) -> list[dict]:
             paths.append(build_path_record(screen_stack + [action, dest_screen, param]))
             return
 
-        paths.append(build_path_record(screen_stack + [action]))
+        if dest_screen is not None:
+            paths.append(build_path_record(screen_stack + [action, dest_screen]))
+        else:
+            paths.append(build_path_record(screen_stack + [action]))
 
     def _walk(node: dict, screen_stack: list[dict]):
         screen = node["screen"]
@@ -932,21 +1145,7 @@ def assemble_flat_paths(start_layout: str, max_depth: int = 4) -> list[dict]:
                 trigger = nav.get("trigger", "")
                 dest_class = nav["target_class"]
                 dest_layout = nav.get("target_layout", "") or ""
-                if trigger.startswith("menu "):
-                    raw_label = trigger[5:].replace("_", " ").title()
-                    elem_tag = "MenuItem"
-                elif trigger.startswith("fn: "):
-                    raw_label = trigger[4:].replace("_", " ").title()
-                    elem_tag = "virtual"
-                elif trigger.startswith("setup: "):
-                    raw_label = trigger[7:].replace("_", " ").title()
-                    elem_tag = "virtual"
-                elif trigger.startswith("click: ") or trigger.startswith("click "):
-                    raw_label = trigger.split(":", 1)[-1].strip().replace("_", " ").title()
-                    elem_tag = "virtual"
-                else:
-                    raw_label = trigger.replace("_", " ").title()
-                    elem_tag = "virtual"
+                raw_label, elem_tag, user_visible = _virtual_label_from_edge(nav)
 
                 if not raw_label.strip():
                     for child in elem.get("children", []):
@@ -973,6 +1172,8 @@ def assemble_flat_paths(start_layout: str, max_depth: int = 4) -> list[dict]:
                     resolved_label=raw_label,
                     trigger=trigger,
                     virtual=True,
+                    user_visible=user_visible,
+                    display_source="ui" if user_visible else "synthetic_navigation",
                 )
                 _emit_structured(
                     stack,
@@ -996,7 +1197,7 @@ def assemble_flat_paths(start_layout: str, max_depth: int = 4) -> list[dict]:
 
             nav = elem.get("navigation")
             gap_beh = elem.get("gap_behaviors", [])
-            label = _resolve_label(merged, text_map)
+            label = _resolve_label(merged, text_map, runtime_label_lookup)
             interaction = _action_for_tag(tag)
             dest_label = (
                 _screen_label(nav["target_class"], nav.get("target_layout", "")) if nav else ""
@@ -1072,6 +1273,245 @@ def assemble_flat_paths(start_layout: str, max_depth: int = 4) -> list[dict]:
     return unique
 
 
+def assemble_exploration_legacy_paths(
+    start_layout: str,
+    max_depth: int = 8,
+    *,
+    max_chains: int = 80000,
+) -> tuple[list[str], dict[str, Any]]:
+    """
+    Build root-to-leaf exploration chains for ``ui_paths_legacy.json``.
+
+    Each string joins UI-visible labels with `` > `` along one static navigation branch
+    from the launcher-assembled tree until no deeper ``children`` subtree exists, plus
+    terminal taps/toggles on that leaf screen.
+    """
+    tree = assemble(start_layout, max_depth)
+    if "error" in tree:
+        return [], {"truncated": False, "error": tree.get("error", ""), "cap": max_chains}
+
+    gt_data = _load_json("ground_truth.json")
+    xml_data = _load_json("static_xml.json")
+    strings = xml_data.get("strings", {})
+
+    layout_text_maps: dict = {}
+    for e in xml_data.get("elements", []):
+        layout = e.get("layout") or e.get("menu") or ""
+        eid = e.get("id", "")
+        text = (e.get("text") or e.get("content_desc") or "").strip()
+        if layout and eid and text and not text.startswith("@"):
+            layout_text_maps.setdefault(layout, {})[eid] = text
+
+    id_to_gt: dict[str, dict] = {}
+    for e in gt_data.get("static_elements", []):
+        eid = e.get("id", "")
+        if eid:
+            id_to_gt[eid] = e
+
+    src_findings = _load_json("source_findings.json")
+    data_driven_lookup = _build_data_driven_lookup(src_findings)
+    runtime_label_lookup = _build_runtime_label_lookup(src_findings)
+
+    results: list[str] = []
+    seen_chain: set[str] = set()
+    truncated = False
+
+    def emit(parts: list[str]) -> None:
+        nonlocal truncated
+        if len(results) >= max_chains:
+            truncated = True
+            return
+        s = exploration_legacy_join(parts)
+        if not s or s in seen_chain:
+            return
+        if len([p for p in parts if p and str(p).strip()]) < 2:
+            return  # single-segment chains lack navigation context; deferred to single_step_legacy
+        seen_chain.add(s)
+        results.append(s)
+
+    def walk_explore(node: dict, prefix_labels: list[str]) -> None:
+        if len(results) >= max_chains:
+            return
+
+        screen = node["screen"]
+        screen_class = node.get("screen_class", "")
+        sc_lower = screen_class.lower()
+        cur_seg = _screen_segment(screen, screen_class)
+        screen_lab = str(cur_seg.get("label") or "").strip()
+        stack_labels = prefix_labels + (
+            [screen_lab] if screen_lab and is_exploration_legacy_segment(cur_seg) else []
+        )
+
+        text_map = layout_text_maps.get(screen, {})
+        all_elems = node.get("ui_elements", [])
+
+        # Navigation destination with no extractable elements (e.g. dialog with dynamic layout):
+        # emit the accumulated label chain so the destination screen is represented in paths.
+        if not all_elems and len(stack_labels) >= 2:
+            emit(stack_labels)
+            return
+
+        for elem in all_elems:
+            tag = elem.get("tag", "")
+
+            if tag == "virtual_nav_item":
+                nav = elem.get("navigation")
+                children = elem.get("children") or []
+                if not nav:
+                    for ch in children:
+                        walk_explore(ch, stack_labels)
+                    continue
+                raw_label, elem_tag, user_visible = _virtual_label_from_edge(nav)
+                if not raw_label.strip():
+                    for ch in children:
+                        walk_explore(ch, stack_labels)
+                    continue
+                act = _action_segment(
+                    layout=screen,
+                    screen_class=screen_class,
+                    element_id="",
+                    element_tag=elem_tag,
+                    interaction="tap",
+                    resolved_label=raw_label,
+                    trigger=nav.get("trigger", ""),
+                    virtual=True,
+                    user_visible=user_visible,
+                    display_source="ui" if user_visible else "synthetic_navigation",
+                )
+                if not is_exploration_legacy_segment(act):
+                    for ch in children:
+                        walk_explore(ch, stack_labels)
+                    continue
+                lab = raw_label.strip()
+                for ch in children:
+                    walk_explore(ch, stack_labels + [lab])
+                continue
+
+            if not _is_path_element(elem, all_elems):
+                for ch in elem.get("children", []):
+                    walk_explore(ch, stack_labels)
+                continue
+
+            merged = dict(elem)
+            eid0 = elem.get("id", "")
+            if eid0 in id_to_gt:
+                ge = id_to_gt[eid0]
+                for k in ("text", "hint", "content_desc"):
+                    if not merged.get(k) and ge.get(k):
+                        merged[k] = ge[k]
+
+            nav = elem.get("navigation")
+            label = _resolve_label(merged, text_map, runtime_label_lookup)
+            interaction = _action_for_tag(elem.get("tag", ""))
+            dest_label = (
+                _screen_label(nav["target_class"], nav.get("target_layout", "")) if nav else ""
+            )
+            dest_class = nav["target_class"] if nav else ""
+            dest_layout = nav.get("target_layout", "") if nav else ""
+
+            gap_beh = elem.get("gap_behaviors", [])
+            options: Optional[list]
+            if interaction == "toggle":
+                options = ["on", "off"]
+            elif interaction == "select":
+                options = None
+            else:
+                options = None
+
+            for gi in gap_beh:
+                if gi.get("gap_type") == "data_driven_dialog":
+                    raw_opts = gi.get("data_driven_options", [])
+                    if raw_opts:
+                        options = [
+                            strings.get(o, o.replace("_", " ").title()) for o in raw_opts
+                        ]
+                        break
+
+            if options is None and dest_label:
+                trigger = nav.get("trigger", "") if nav else ""
+                dest_cls_lower = nav.get("target_class", "").lower() if nav else ""
+                raw_opts = _lookup_options(
+                    data_driven_lookup, sc_lower, trigger, dest_cls_lower
+                )
+                if raw_opts:
+                    options = [
+                        strings.get(o, o.replace("_", " ").title()) for o in raw_opts
+                    ]
+
+            act = _action_segment(
+                layout=screen,
+                screen_class=screen_class,
+                element_id=elem.get("id", "") or "",
+                element_tag=elem.get("tag", ""),
+                interaction=interaction,
+                resolved_label=label,
+                trigger=(nav.get("trigger") if nav else None) or None,
+                virtual=False,
+            )
+
+            children = elem.get("children") or []
+
+            if children:
+                if not is_exploration_legacy_segment(act):
+                    for ch in children:
+                        walk_explore(ch, stack_labels)
+                    continue
+                lab = label.strip()
+                if interaction == "tap" and options:
+                    for opt in options:
+                        br = _branch_segment(str(opt))
+                        if not is_exploration_legacy_segment(br):
+                            continue
+                        opt_lab = str(br.get("value") or "").strip()
+                        for ch in children:
+                            walk_explore(
+                                ch,
+                                stack_labels + [lab] + [opt_lab],
+                            )
+                elif options:
+                    for opt in options:
+                        br = _branch_segment(str(opt))
+                        if not is_exploration_legacy_segment(br):
+                            continue
+                        opt_lab = str(br.get("value") or "").strip()
+                        for ch in children:
+                            walk_explore(ch, stack_labels + [lab] + [opt_lab])
+                else:
+                    for ch in children:
+                        walk_explore(ch, stack_labels + [lab])
+                continue
+
+            # Leaf controls: no nested destination screen in the assembled tree
+            if not is_exploration_legacy_segment(act):
+                continue
+            lab = label.strip()
+            if interaction == "toggle":
+                for opt in ("on", "off"):
+                    br = _branch_segment(opt)
+                    if is_exploration_legacy_segment(br):
+                        emit(stack_labels + [lab] + [opt])
+            elif interaction == "select" and options:
+                for opt in options:
+                    br = _branch_segment(str(opt))
+                    if is_exploration_legacy_segment(br):
+                        emit(stack_labels + [lab] + [str(br.get("value") or "")])
+            else:
+                param = _maybe_parameter_segment(dest_class, options, interaction)
+                if param is not None and dest_label and nav:
+                    if is_exploration_legacy_segment(param):
+                        emit(stack_labels + [lab] + [str(param.get("placeholder_display") or "{input}")])
+                else:
+                    emit(stack_labels + [lab])
+
+    walk_explore(tree, [])
+    stats: dict[str, Any] = {
+        "truncated": truncated,
+        "cap": max_chains,
+        "exploration_chain_count": len(results),
+    }
+    return results, stats
+
+
 def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tuple[list[dict], dict]:
     """
     Build app-wide UI paths for every discovered screen/layout.
@@ -1089,6 +1529,7 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
     src_findings = _load_json("source_findings.json")
     strings = xml_data.get("strings", {})
     data_driven_lookup = _build_data_driven_lookup(src_findings)
+    runtime_label_lookup = _build_runtime_label_lookup(src_findings)
 
     layout_text_maps: dict[str, dict[str, str]] = {}
     for e in xml_data.get("elements", []):
@@ -1135,30 +1576,33 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
         if layout:
             class_to_layout[class_name] = layout
 
-    app_root_seg = {"kind": "screen", "layout": "_app", "screen_class": "", "label": "App"}
+    app_root_seg = {
+        "kind": "screen",
+        "layout": "_app",
+        "screen_class": "",
+        "label": "App",
+        "user_visible": False,
+        "display_role": "internal_topology",
+        "display_source": "internal_topology",
+    }
     runtime_root_seg = {
         "kind": "screen",
         "layout": "_runtime_entry",
         "screen_class": "",
         "label": "Runtime Entry",
+        "user_visible": False,
+        "display_role": "internal_topology",
+        "display_source": "internal_topology",
     }
     unmapped_root_seg = {
         "kind": "screen",
         "layout": "_unmapped_layouts",
         "screen_class": "",
         "label": "Unmapped Layouts",
+        "user_visible": False,
+        "display_role": "internal_topology",
+        "display_source": "internal_topology",
     }
-
-    def _virtual_label(trigger: str) -> tuple[str, str]:
-        if trigger.startswith("menu "):
-            return trigger[5:].replace("_", " ").title(), "MenuItem"
-        if trigger.startswith("fn: "):
-            return trigger[4:].replace("_", " ").title(), "virtual"
-        if trigger.startswith("setup: "):
-            return trigger[7:].replace("_", " ").title(), "virtual"
-        if trigger.startswith("click: ") or trigger.startswith("click "):
-            return trigger.split(":", 1)[-1].strip().replace("_", " ").title(), "virtual"
-        return trigger.replace("_", " ").title(), "virtual"
 
     def _edge_sort_key(edge: dict) -> tuple[int, int, str, str, int]:
         edge_type = str(edge.get("type", ""))
@@ -1208,21 +1652,24 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
                 if not dest or dest in screen_stacks_by_class:
                     continue
                 trigger = str(edge.get("trigger") or "")
-                label, elem_tag = _virtual_label(trigger)
-                if not label.strip():
-                    label = _screen_label(dest, class_to_layout.get(dest, ""))
                 dest_layout = edge.get("to_layout") or class_to_layout.get(dest) or _resolve_layout_from_class(dest, nav_data)
-                nav_action = _action_segment(
-                    layout=cur_layout,
-                    screen_class=cur,
-                    element_id="",
-                    element_tag=elem_tag,
-                    interaction="tap",
-                    resolved_label=label,
-                    trigger=trigger,
-                    virtual=True,
-                )
-                screen_stacks_by_class[dest] = cur_stack + [nav_action, _screen_segment(dest_layout, dest)]
+                label, elem_tag, user_visible = _virtual_label_from_edge(edge)
+                if label.strip():
+                    nav_action = _action_segment(
+                        layout=cur_layout,
+                        screen_class=cur,
+                        element_id="",
+                        element_tag=elem_tag,
+                        interaction="tap",
+                        resolved_label=label,
+                        trigger=trigger,
+                        virtual=True,
+                        user_visible=user_visible,
+                        display_source="ui" if user_visible else "synthetic_navigation",
+                    )
+                    screen_stacks_by_class[dest] = cur_stack + [nav_action, _screen_segment(dest_layout, dest)]
+                else:
+                    screen_stacks_by_class[dest] = cur_stack + [_screen_segment(dest_layout, dest)]
                 queue.append(dest)
 
     def _screen_stack(layout: str, screen_class: str) -> list[dict]:
@@ -1253,7 +1700,7 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
             matched = any(_match_trigger_to_element(trigger, e.get("id", "")) for e in layout_elements)
             if matched:
                 continue
-            label, elem_tag = _virtual_label(trigger)
+            label, elem_tag, user_visible = _virtual_label_from_edge(edge)
             if not label.strip():
                 continue
             act = _action_segment(
@@ -1265,6 +1712,8 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
                 resolved_label=label,
                 trigger=trigger,
                 virtual=True,
+                user_visible=user_visible,
+                display_source="ui" if user_visible else "synthetic_navigation",
             )
             paths.append(build_path_record(screen_stack + [act]))
 
@@ -1272,7 +1721,12 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
             merged = dict(elem)
             nav = None
             for edge in nav_edges:
-                if _match_trigger_to_element(edge.get("trigger", ""), merged.get("id", "")):
+                trigger = edge.get("trigger", "")
+                if _match_trigger_to_element(trigger, merged.get("id", "")):
+                    nav = edge
+                    break
+                if _LIFECYCLE_TRIGGER_RE.match(trigger) and \
+                        _match_dialog_target_to_element(edge.get("to", ""), merged.get("id", "")):
                     nav = edge
                     break
             include_point = (
@@ -1283,7 +1737,7 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
             )
             if not include_point:
                 continue
-            label = _resolve_label(merged, text_map)
+            label = _resolve_label(merged, text_map, runtime_label_lookup)
             if not label and not merged.get("id") and nav is None:
                 continue
             interaction = _action_for_tag(merged.get("tag", ""))
@@ -1313,7 +1767,15 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
                 trigger=(nav.get("trigger") if nav else None) or None,
                 virtual=False,
             )
-            _append_paths(screen_stack + [act], interaction, options)
+            dest_screen_seg = None
+            if nav and options is None and interaction == "tap":
+                dest_class_nav = nav.get("to", "")
+                dest_layout_nav = nav.get("to_layout", "") or class_to_layout.get(dest_class_nav, "")
+                dest_label_nav = _screen_label(dest_class_nav, dest_layout_nav) if dest_class_nav else ""
+                if dest_label_nav and dest_class_nav:
+                    dest_screen_seg = _dest_screen_segment(dest_class_nav, dest_layout_nav)
+            seg_list = screen_stack + [act] + ([dest_screen_seg] if dest_screen_seg else [])
+            _append_paths(seg_list, interaction, options)
 
     seen: set[str] = set()
     unique: list[dict] = []

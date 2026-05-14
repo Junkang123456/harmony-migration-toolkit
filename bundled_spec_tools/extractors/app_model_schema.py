@@ -15,6 +15,49 @@ from typing import Any
 
 APP_MODEL_VERSION = "1"
 
+INTERNAL_DISPLAY_LABELS = {
+    "App", "Runtime Entry", "Unmapped Layouts",
+    "Activity", "Fragment", "Dialog", "Button",
+}
+INTERNAL_NAME_SUFFIXES = (
+    "Adapter",
+    "Builder",
+    "Controller",
+    "Delegate",
+    "Factory",
+    "Handler",
+    "Helper",
+    "Holder",
+    "Manager",
+    "Mapper",
+    "Navigator",
+    "Presenter",
+    "Provider",
+    "Repository",
+    "Screen",
+    "Use Case",
+    "UseCase",
+    "View",
+    "View Holder",
+    "View Model",
+    "ViewModel",
+)
+INTERNAL_METHOD_LABELS = {
+    "Init",
+    "Initialize",
+    "Newinstance",
+    "New Instance",
+    "Oncreate",
+    "On Create",
+    "Onresume",
+    "On Resume",
+    "Setup",
+    "Setupviews",
+    "Setup Views",
+}
+SYNTHETIC_LABEL_RE = re.compile(r"^(?:L2:|fn:|setup:|on[A-Z]|on_|_)", re.IGNORECASE)
+LAYOUT_STEM_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)+$")
+
 
 def ui_point_id(layout: str, element_id: str, *, virtual: bool = False, trigger: str = "") -> str:
     """Stable id for an XML-backed control or a virtual nav item."""
@@ -92,6 +135,8 @@ def path_display_report_from_segments(
     """
     parts: list[str] = []
     for seg in segments:
+        if seg.get("user_visible") is False:
+            continue
         k = seg.get("kind", "")
         if k == "screen":
             lab = str(seg.get("label") or seg.get("layout") or "")
@@ -126,10 +171,17 @@ def path_display_report_from_segments(
     return " › ".join(p for p in parts if p)
 
 
-def path_display_from_segments(segments: list[dict[str, Any]], *, template: bool = False) -> str:
+def path_display_from_segments(
+    segments: list[dict[str, Any]],
+    *,
+    template: bool = False,
+    user_visible_only: bool = False,
+) -> str:
     """Human-oriented chain (legacy separator ' > ')."""
     parts: list[str] = []
     for seg in segments:
+        if user_visible_only and not is_user_click_segment(seg):
+            continue
         k = seg.get("kind", "")
         if k == "screen":
             parts.append(str(seg.get("label") or seg.get("layout") or ""))
@@ -147,6 +199,146 @@ def path_display_from_segments(segments: list[dict[str, Any]], *, template: bool
     return " > ".join(p for p in parts if p)
 
 
+def _bad_display_reason(label: str) -> str:
+    label = (label or "").strip()
+    if not label:
+        return "empty_label"
+    if label in INTERNAL_DISPLAY_LABELS:
+        return "internal_topology"
+    if SYNTHETIC_LABEL_RE.match(label):
+        return "synthetic_source_label"
+    if label in INTERNAL_METHOD_LABELS:
+        return "internal_method"
+    compact = label.replace(" ", "")
+    for suffix in INTERNAL_NAME_SUFFIXES:
+        if label.endswith(suffix) or compact.endswith(suffix.replace(" ", "")):
+            return "internal_class_name"
+    if LAYOUT_STEM_RE.match(label):
+        return "layout_resource_name"
+    return ""
+
+
+def is_user_click_segment(seg: dict[str, Any]) -> bool:
+    """True when a segment is suitable for user-facing click path display."""
+    if seg.get("user_visible") is False:
+        return False
+    role = str(seg.get("display_role") or "")
+    if role in {"internal_topology", "source_evidence", "machine_id"}:
+        return False
+    source = str(seg.get("display_source") or "")
+    if source in {"internal_topology", "source_evidence", "synthetic_navigation"}:
+        return False
+
+    kind = seg.get("kind", "")
+    if kind == "screen":
+        label = str(seg.get("label") or "")
+        if _bad_display_reason(label):
+            return False
+        if str(seg.get("display_source") or "") in {
+            "navigation_target",
+            "source_effect_context",
+        }:
+            return False
+        if not seg.get("screen_class") and LAYOUT_STEM_RE.match(str(seg.get("layout") or "")):
+            return False
+        return True
+    if kind == "action":
+        label = str(seg.get("resolved_label") or seg.get("element_id") or "")
+        return not _bad_display_reason(label)
+    if kind == "branch":
+        label = str(seg.get("value") or "")
+        return not _bad_display_reason(label)
+    if kind == "parameter":
+        return True
+    return False
+
+
+def is_exploration_legacy_segment(seg: dict[str, Any]) -> bool:
+    """
+    True if a segment may appear in ui_paths_legacy root-to-leaf exploration chains.
+
+    Stricter than raw path_display but allows class-derived screen titles when they read
+    as product-facing names (still rejects layout stems, synthetic L2 labels, etc.).
+    """
+    if seg.get("user_visible") is False:
+        return False
+    role = str(seg.get("display_role") or "")
+    if role in {"internal_topology", "source_evidence", "machine_id"}:
+        return False
+    source = str(seg.get("display_source") or "")
+    if source in {"internal_topology", "source_evidence"}:
+        return False
+    if source == "synthetic_navigation":
+        return False
+
+    kind = seg.get("kind", "")
+    if kind == "screen":
+        label = str(seg.get("label") or "")
+        if _bad_display_reason(label):
+            return False
+        if not seg.get("screen_class") and LAYOUT_STEM_RE.match(str(seg.get("layout") or "")):
+            return False
+        return True
+    if kind == "action":
+        label = str(seg.get("resolved_label") or seg.get("element_id") or "")
+        return bool(label) and not _bad_display_reason(label)
+    if kind == "branch":
+        label = str(seg.get("value") or "")
+        return not _bad_display_reason(label)
+    if kind == "parameter":
+        return True
+    return False
+
+
+def exploration_legacy_join(parts: list[str]) -> str:
+    """Join exploration chain segments with legacy separator."""
+    return " > ".join(p.strip() for p in parts if p and str(p).strip())
+
+
+def user_click_path_quality(path: dict[str, Any]) -> dict[str, Any]:
+    """Summarize why a structured path is or is not eligible for legacy export."""
+    dropped: list[dict[str, Any]] = []
+    kept = 0
+    for idx, seg in enumerate(path.get("segments") or []):
+        if is_user_click_segment(seg):
+            kept += 1
+            continue
+        label = str(
+            seg.get("label")
+            or seg.get("resolved_label")
+            or seg.get("value")
+            or seg.get("element_id")
+            or seg.get("layout")
+            or ""
+        )
+        reason = _bad_display_reason(label)
+        if not reason:
+            if seg.get("user_visible") is False:
+                reason = "not_user_visible"
+            elif seg.get("display_role") in {"internal_topology", "source_evidence", "machine_id"}:
+                reason = str(seg.get("display_role"))
+            elif seg.get("display_source") in {"internal_topology", "source_evidence", "synthetic_navigation"}:
+                reason = str(seg.get("display_source"))
+            else:
+                reason = "not_user_click_segment"
+        dropped.append(
+            {
+                "index": idx,
+                "kind": seg.get("kind", ""),
+                "label": label,
+                "reason": reason,
+            }
+        )
+    return {
+        "path_id": path.get("path_id", ""),
+        "path_display": path.get("path_display", ""),
+        "path_display_legacy": path.get("path_display_legacy", ""),
+        "kept_segment_count": kept,
+        "dropped_segments": dropped,
+        "eligible": kept > 0,
+    }
+
+
 def build_path_record(segments: list[dict[str, Any]]) -> dict[str, Any]:
     """Attach path_id, path_key, path_display, optional template, spec helpers."""
     pid = path_id_from_segments(segments)
@@ -160,12 +352,21 @@ def build_path_record(segments: list[dict[str, Any]]) -> dict[str, Any]:
     }
     if has_param:
         rec["path_display_template"] = path_display_from_segments(segments, template=True)
+        rec["path_display_legacy_template"] = path_display_from_segments(
+            segments,
+            template=True,
+            user_visible_only=True,
+        )
     # Spec / legacy consumers
     screen_label, element_id, primary_layout = _spec_fields_from_segments(segments)
     rec["screen"] = screen_label
     rec["element_id"] = element_id
     rec["primary_layout"] = primary_layout
-    rec["path_display_legacy"] = rec["path_display"]
+    rec["path_display_legacy"] = path_display_from_segments(
+        segments,
+        template=False,
+        user_visible_only=True,
+    )
     return rec
 
 

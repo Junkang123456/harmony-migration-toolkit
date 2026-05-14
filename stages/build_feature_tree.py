@@ -446,6 +446,52 @@ def build_feature_tree(
                 }
             )
 
+    # ── Add tab nodes from tab_structure.json ──
+    tab_structure_path = facts_dir / "tab_structure.json"
+    tab_screen_ids = {f"screen:{h}" for h in screen_hosts}
+    # Fragment screens that are hosted by a parent Activity in nav graph
+    _fragment_host_fallback: dict[str, str] = {
+        "PagesFragment": "PagesActivity",
+    }
+    if tab_structure_path.is_file():
+        tab_data = load_json(tab_structure_path)
+        for screen_cls, meta in sorted(tab_data.get("screens", {}).items()):
+            sid = f"screen:{screen_cls}"
+            if sid not in tab_screen_ids:
+                fallback = _fragment_host_fallback.get(screen_cls)
+                if fallback:
+                    sid = f"screen:{fallback}"
+                else:
+                    continue
+            for t in meta.get("tabs", []):
+                label = t.get("label", "")
+                if not label:
+                    continue
+                tid = f"tab:{screen_cls}:{_stable_token(label, label)}"
+                if any(n.get("node_id") == tid for n in nodes):
+                    continue
+                nodes.append(
+                    {
+                        "node_id": tid,
+                        "kind": "tab",
+                        "label": label,
+                        "tab_position": t.get("position", 0),
+                        "screen_class": screen_cls,
+                        "tab_mode": meta.get("tab_mode", "unknown"),
+                        "evidence": {"source": "tab_structure.json"},
+                    }
+                )
+                edges.append(
+                    {
+                        "edge_id": _stable_edge_id(sid, tid, "tab_of", len(edges)),
+                        "from": sid,
+                        "to": tid,
+                        "rel": "tab_of",
+                        "determinism": "static_analysis",
+                        "source": "tab_structure.json",
+                    }
+                )
+
     for sym in sorted(function_symbols, key=lambda s: (str(s.get("file") or ""), _safe_int(s.get("start_line")), str(s.get("symbol_id") or ""))):
         symbol_id = str(sym.get("symbol_id") or "").strip()
         if not symbol_id:

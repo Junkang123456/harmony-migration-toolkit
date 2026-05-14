@@ -77,9 +77,11 @@ def _scan_all_layouts(project_root: str) -> set:
     return layouts
 
 _BINDING_DECL_RE = re.compile(
-    r'by\s+\w*[Bb]inding\w*\s*\(\s*(\w+Binding)\s*::'  # by viewBinding(XxxBinding::inflate)
-    r'|(\w+Binding)\.inflate\s*\('                        # XxxBinding.inflate(
-    r'|setContentView\s*\(\s*R\.layout\.(\w+)'            # setContentView(R.layout.xxx)
+    r'by\s+\w*[Bb]inding\w*\s*\(\s*(\w+Binding)\s*::'   # by viewBinding(XxxBinding::inflate)
+    r'|(\w+Binding)\.inflate\s*\('                         # XxxBinding.inflate(  [ViewBinding]
+    r'|setContentView\s*\(\s*R\.layout\.(\w+)'             # setContentView(R.layout.xxx)
+    r'|DataBindingUtil\.setContentView\s*\([^,]+,\s*R\.layout\.(\w+)'   # DataBinding Activity
+    r'|DataBindingUtil\.inflate\s*\([^,]+,\s*R\.layout\.(\w+)'          # DataBinding Fragment
 )
 
 
@@ -100,7 +102,8 @@ def _scan_class_layouts(project_root: str | Path) -> dict:
         class_name = src_file.stem
         for m in _BINDING_DECL_RE.finditer(source):
             binding_class = m.group(1) or m.group(2)
-            direct_layout = m.group(3)
+            # Groups 3-5: direct layout name (setContentView / DataBindingUtil variants)
+            direct_layout = m.group(3) or m.group(4) or m.group(5)
             if direct_layout:
                 result[class_name] = direct_layout
                 break
@@ -190,6 +193,112 @@ def _extract_edges_from_file(filepath: Path, source: str) -> list[dict]:
             "trigger": trigger,
             "line": line,
         })
+
+    # --- 1d. Java: startActivity(new Intent(ctx, XxxActivity.class)) ---
+    for m in re.finditer(
+        r'startActivity(?:ForResult)?\s*\([^)]*?new\s+Intent\s*\([^,)]+,\s*(\w+)\.class\s*\)',
+        source
+    ):
+        target = m.group(1)
+        line = source[:m.start()].count('\n') + 1
+        if any(e["to"] == target and abs(e["line"] - line) < 5 for e in edges):
+            continue
+        trigger = _find_trigger_context(source, m.start(), class_name)
+        edges.append({
+            "from": class_name,
+            "to": target,
+            "to_layout": _find_layout_for_class(target),
+            "type": "activity",
+            "via": "startActivity [Java]",
+            "trigger": trigger,
+            "line": line,
+        })
+
+    # --- 1e. Conditional ::class.java assigned to a variable used in Intent(ctx, var) ---
+    # Handles: val target = if (...) AActivity::class.java else BActivity::class.java
+    #          return Intent(context, target)
+    _FN_DECL_RE_1E = re.compile(
+        r'(?:fun\s+(\w+)\s*\('
+        r'|(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s]+\s+(\w+)\s*\()'
+    )
+    for fn_m in _FN_DECL_RE_1E.finditer(source):
+        fn_name_1e = fn_m.group(1) or fn_m.group(2)
+        body_1e = _find_function_body(source, fn_name_1e, max_len=4000)
+        if not body_1e:
+            continue
+        # Only trigger when the body creates Intent with a variable (not a literal class)
+        # Pattern: Intent(context, someVariable) — the second arg is NOT followed by ::class
+        if not re.search(r'Intent\s*\(\s*\w+[\w.@]*\s*,\s*\w+\s*\)', body_1e):
+            continue
+        klasses_1e = re.findall(r'\b(\w+)::class\.java', body_1e)
+        if not klasses_1e:
+            continue
+        line_1e = source[:fn_m.start()].count('\n') + 1
+        trigger_1e = f"fn: {fn_name_1e}"
+        for klass in set(klasses_1e):
+            if any(e["to"] == klass and e["from"] == class_name for e in edges):
+                continue
+            edges.append({
+                "from": class_name,
+                "to": klass,
+                "to_layout": _find_layout_for_class(klass),
+                "type": "activity",
+                "via": "Intent(ctx, variable)[conditional]",
+                "trigger": trigger_1e,
+                "line": line_1e,
+            })
+
+    # --- 1f. Java: Intent var = new Intent(ctx, Xxx.class); ...; startActivity(var) ---
+    _JAVA_FN_DECL_RE = re.compile(
+        r'(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s]+\s+(\w+)\s*\('
+    )
+    for fn_m in _JAVA_FN_DECL_RE.finditer(source):
+        fn_name_1f = fn_m.group(1)
+        body_1f = _find_function_body(source, fn_name_1f, max_len=5000)
+        if not body_1f or 'startActivity' not in body_1f:
+            continue
+        for im in re.finditer(
+            r'(?:Intent|intent)\s+\w+\s*=\s*new\s+Intent\s*\([^,)]+,\s*(\w+)\.class\s*\)',
+            body_1f,
+        ):
+            target = im.group(1)
+            line_1f = source[:fn_m.start()].count('\n') + 1
+            if any(e["to"] == target and e["from"] == class_name for e in edges):
+                continue
+            edges.append({
+                "from": class_name,
+                "to": target,
+                "to_layout": _find_layout_for_class(target),
+                "type": "activity",
+                "via": "Intent(var) [Java]",
+                "trigger": f"fn: {fn_name_1f}",
+                "line": line_1f,
+            })
+
+    # --- 1g. Async lambda: postDelayed / lifecycleScope.launch / runOnUiThread ---
+    _ASYNC_WRAPPERS_RE = re.compile(
+        r'(?:postDelayed|lifecycleScope\.launch|viewModelScope\.launch|'
+        r'runOnUiThread|Handler\s*\([^)]*\)\.post(?:Delayed)?)\s*[\({]'
+    )
+    for aw in _ASYNC_WRAPPERS_RE.finditer(source):
+        block = _get_click_block(source, aw.end() - 1, max_len=1000)
+        for im in re.finditer(
+            r'Intent\s*\(\s*\w+[\w.@]*\s*,\s*(\w+)::class\.java', block
+        ):
+            target = im.group(1)
+            line_aw = source[:aw.start()].count('\n') + 1
+            if any(e["to"] == target and abs(e["line"] - line_aw) < 10 for e in edges):
+                continue
+            trigger_aw = _find_trigger_context(source, aw.start(), class_name)
+            edges.append({
+                "from": class_name,
+                "to": target,
+                "to_layout": _find_layout_for_class(target),
+                "type": "activity",
+                "via": "async lambda",
+                "trigger": trigger_aw,
+                "line": line_aw,
+            })
 
     # --- 2. startActivity(Intent(this, XxxActivity::class.java).apply { ... }) ---
     for m in re.finditer(
@@ -565,6 +674,15 @@ def _find_trigger_context(source: str, pos: int, class_name: str) -> str:
             return f"setup: {setup_match.group(1)}"
         return f"fn: {fn_name}"
 
+    # Java method fallback: public [static] ReturnType methodName(
+    for jm in re.finditer(
+        r'(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s]+\s+(\w+)\s*\(',
+        context,
+    ):
+        fn_name = jm.group(1)
+    if fn_name:
+        return f"fn: {fn_name}"
+
     # Nearest setOnClickListener receiver within the context window
     click_name = ""
     for click_match in re.finditer(r'(\w+)\.setOnClickListener', context):
@@ -595,7 +713,12 @@ def _get_click_block(source: str, open_pos: int, max_len: int = 2000) -> str:
 
 
 def _find_function_body(source: str, fn_name: str, max_len: int = 3000) -> str:
-    pattern = re.compile(r'(?:private|public|protected|internal)?\s*(?:override\s+)?(?:suspend\s+)?fun\s+' + re.escape(fn_name) + r'\s*\(')
+    pattern = re.compile(
+        r'(?:(?:private|public|protected|internal)?\s*(?:override\s+)?(?:suspend\s+)?fun\s+'
+        + re.escape(fn_name) + r'\s*\('
+        + r'|(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s]+\s+'
+        + re.escape(fn_name) + r'\s*\()'
+    )
     m = pattern.search(source)
     if not m:
         return ""
@@ -789,6 +912,578 @@ def _resolve_adapter_bindings(
     return edges
 
 
+# ── BottomNav / TabLayout edges ───────────────────────────────────────────────
+
+_INFLATE_LAYOUT_RE = re.compile(r'R\.layout\.(\w+)')
+_INFLATE_BINDING_RE = re.compile(r'(\w+Binding)(?:::|\.)\s*inflate')
+
+_BOTTOMNAV_LISTENER_RE = re.compile(
+    r'setOn(?:Navigation)?ItemSelectedListener|addOnTabSelectedListener'
+)
+_FRAGMENT_ADAPTER_OVERRIDE_RE = re.compile(
+    r'override\s+fun\s+(?:createFragment|getItem)\s*\([^)]*\)[^{]*\{([^}]{0,2000})',
+    re.S,
+)
+_POS_FRAGMENT_RE = re.compile(r'[-=]>\s*([A-Z]\w+Fragment)\s*\(')
+
+
+def _load_string_resources(project_root: str | Path) -> dict[str, str]:
+    """Load all @string values from res/values/strings*.xml files."""
+    strings: dict[str, str] = {}
+    for res_dir in android_project.res_dirs(project_root):
+        values_dir = res_dir / "values"
+        if not values_dir.is_dir():
+            continue
+        for strings_file in values_dir.glob("strings*.xml"):
+            try:
+                tree = ET.parse(strings_file)
+                for elem in tree.iter("string"):
+                    name = elem.get("name", "")
+                    text = (elem.text or "").strip()
+                    if name and text:
+                        strings[name] = text
+            except ET.ParseError:
+                pass
+    return strings
+
+
+def _extract_menu_item_labels(project_root: str | Path) -> dict[str, str]:
+    """
+    Scan layout XMLs for BottomNavigationView ``app:menu`` references, then parse
+    those menu XMLs to produce {menu_item_id: resolved_display_label}.
+    """
+    strings = _load_string_resources(project_root)
+    menu_names: set[str] = set()
+
+    # Find all app:menu="@menu/XXX" references across all layout files
+    for res_dir in android_project.res_dirs(project_root):
+        for layout_dir in res_dir.glob("layout*"):
+            for xml_file in layout_dir.glob("*.xml"):
+                try:
+                    content = xml_file.read_text(encoding="utf-8", errors="ignore")
+                    for m in re.finditer(r'app:menu="@menu/(\w+)"', content):
+                        menu_names.add(m.group(1))
+                except OSError:
+                    pass
+
+    labels: dict[str, str] = {}
+    for res_dir in android_project.res_dirs(project_root):
+        menu_dir = res_dir / "menu"
+        if not menu_dir.is_dir():
+            continue
+        for menu_name in menu_names:
+            menu_file = menu_dir / f"{menu_name}.xml"
+            if not menu_file.exists():
+                continue
+            try:
+                tree = ET.parse(menu_file)
+                for item in tree.iter("item"):
+                    raw_id = item.get(f"{android_project.ANDROID_NS}id", "")
+                    item_id = raw_id.split("/")[-1]
+                    title_raw = item.get(f"{android_project.ANDROID_NS}title", "")
+                    if title_raw.startswith("@string/"):
+                        title = strings.get(title_raw[8:], "")
+                    else:
+                        title = title_raw
+                    if item_id and title:
+                        labels[item_id] = title
+            except ET.ParseError:
+                pass
+
+    return labels
+
+
+def _extract_bottomnav_edges(project_root: str | Path) -> list[dict]:
+    """
+    Extract BottomNavigationView / TabLayout navigation edges (additive, zero hardcoding).
+
+    Handles two patterns:
+    • Pattern A – setOnItemSelectedListener with ``when(item.itemId)`` blocks mapping
+      ``R.id.XXX`` to ``XxxFragment()`` within the same file.
+    • Pattern B – FragmentStateAdapter / FragmentPagerAdapter ``createFragment`` /
+      ``getItem`` overrides that return Fragment instances per position.
+
+    Trigger format ``bottomnav:<menu_id>`` is intentionally opaque so the assembler
+    treats this as a transparent hop and lets the Fragment's own screen label surface
+    in exploration chains (avoids the "My Site > My Site" duplicate).
+    """
+    edges: list[dict] = []
+    menu_labels = _extract_menu_item_labels(project_root)
+
+    for src_file in android_project.source_files(project_root):
+        source = src_file.read_text(encoding="utf-8", errors="ignore")
+        class_name = src_file.stem
+
+        # Pattern A: BottomNav / TabLayout item listener
+        if _BOTTOMNAV_LISTENER_RE.search(source):
+            for m in re.finditer(
+                r'R\.id\.(\w+)[^\n]{0,500}?([A-Z]\w+Fragment)\s*\(',
+                source,
+                re.S,
+            ):
+                menu_id = m.group(1)
+                fragment_class = m.group(2)
+                if any(
+                    e["from"] == class_name
+                    and e["to"] == fragment_class
+                    and e["type"] == "bottom_nav"
+                    for e in edges
+                ):
+                    continue
+                edges.append({
+                    "from": class_name,
+                    "to": fragment_class,
+                    "to_layout": _find_layout_for_class(fragment_class),
+                    "type": "bottom_nav",
+                    "via": f"BottomNav:{menu_id}",
+                    "trigger": f"bottomnav:{menu_id}",
+                    "display_label": menu_labels.get(menu_id, ""),
+                    "line": source[:m.start()].count("\n") + 1,
+                    "user_visible": True,
+                })
+
+        # Pattern B: FragmentStateAdapter / FragmentPagerAdapter createFragment/getItem
+        if re.search(r'FragmentState(?:Pager)?Adapter|FragmentPagerAdapter', source):
+            for m in _FRAGMENT_ADAPTER_OVERRIDE_RE.finditer(source):
+                body = m.group(1)
+                for frag_class in _POS_FRAGMENT_RE.findall(body):
+                    if any(
+                        e["from"] == class_name
+                        and e["to"] == frag_class
+                        and e["type"] == "bottom_nav"
+                        for e in edges
+                    ):
+                        continue
+                    edges.append({
+                        "from": class_name,
+                        "to": frag_class,
+                        "to_layout": _find_layout_for_class(frag_class),
+                        "type": "bottom_nav",
+                        "via": "ViewPager",
+                        "trigger": f"bottomnav:{frag_class}",
+                        "display_label": re.sub(
+                            r'(?<=[a-z])(?=[A-Z])', ' ',
+                            frag_class.replace("Fragment", ""),
+                        ).strip(),
+                        "line": source[:m.start()].count("\n") + 1,
+                        "user_visible": True,
+                    })
+
+        # Pattern C: inner NavAdapter / fragment factory with enum → Fragment when blocks.
+        # Catches e.g. WordPress's inner class NavAdapter.createFragment(PageType) {
+        #   when (pageType) { MY_SITE -> MySiteFragment.newInstance() ... }
+        # The file also contains BottomNav setup, so we know these fragments are tab content.
+        if re.search(r'inner\s+class\s+\w*[Aa]dapter|fun\s+createFragment\s*\(', source):
+            for m in re.finditer(
+                r'when\s*\([^)]+\)\s*\{([^}]{0,2000})\}',
+                source,
+                re.S,
+            ):
+                body = m.group(1)
+                for frag_class in re.findall(r'([A-Z]\w+Fragment)\.(?:newInstance|newInstance)\(', body):
+                    if any(
+                        e["from"] == class_name and e["to"] == frag_class
+                        and e["type"] == "bottom_nav"
+                        for e in edges
+                    ):
+                        continue
+                    edges.append({
+                        "from": class_name,
+                        "to": frag_class,
+                        "to_layout": _find_layout_for_class(frag_class),
+                        "type": "bottom_nav",
+                        "via": "NavAdapter",
+                        "trigger": f"bottomnav:{frag_class}",
+                        "display_label": re.sub(
+                            r"(?<=[a-z])(?=[A-Z])", " ",
+                            frag_class.replace("Fragment", ""),
+                        ).strip(),
+                        "line": source[:m.start()].count("\n") + 1,
+                        "user_visible": True,
+                    })
+                # Also catch bare constructor calls: ReaderFragment(), else ReaderFragment(), etc.
+                for frag_class in re.findall(r'(?:[-=]>|else)\s*([A-Z]\w+Fragment)\s*[\.(]', body):
+                    if any(
+                        e["from"] == class_name and e["to"] == frag_class
+                        and e["type"] == "bottom_nav"
+                        for e in edges
+                    ):
+                        continue
+                    edges.append({
+                        "from": class_name,
+                        "to": frag_class,
+                        "to_layout": _find_layout_for_class(frag_class),
+                        "type": "bottom_nav",
+                        "via": "NavAdapter",
+                        "trigger": f"bottomnav:{frag_class}",
+                        "display_label": re.sub(
+                            r"(?<=[a-z])(?=[A-Z])", " ",
+                            frag_class.replace("Fragment", ""),
+                        ).strip(),
+                        "line": source[:m.start()].count("\n") + 1,
+                        "user_visible": True,
+                    })
+
+    return edges
+
+
+# ── RecyclerView adapter → item layout edges ──────────────────────────────────
+
+def _extract_adapter_item_layouts(project_root: str | Path) -> dict[str, list[str]]:
+    """
+    Two-stage scan for RecyclerView adapter → item layout mappings.
+
+    Stage 1: Find every source file that is a ViewHolder or Adapter and collects
+             layout names it inflates (R.layout.XXX or XxxBinding::inflate patterns).
+    Stage 2: For each Adapter class, aggregate layouts from its own file plus all
+             ViewHolder classes it instantiates in ``onCreateViewHolder``.
+
+    Returns ``{adapter_class_name: [item_layout_name, ...]}``.
+    """
+    is_adapter_re = re.compile(
+        r'RecyclerView\.Adapter|ListAdapter|PagingDataAdapter'
+    )
+
+    # Stage 1: collect layouts for every ViewHolder or Adapter file
+    file_layouts: dict[str, list[str]] = {}  # {class_name: [layout_name, ...]}
+    for src_file in android_project.source_files(project_root):
+        class_name = src_file.stem
+        is_vh = "ViewHolder" in class_name
+        try:
+            source = src_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if not is_vh and not is_adapter_re.search(source):
+            continue
+        layouts: list[str] = []
+        for m in _INFLATE_LAYOUT_RE.finditer(source):
+            lname = m.group(1)
+            if lname not in layouts:
+                layouts.append(lname)
+        for m in _INFLATE_BINDING_RE.finditer(source):
+            lname = _binding_to_layout(m.group(1))
+            if lname not in layouts:
+                layouts.append(lname)
+        if layouts:
+            file_layouts[class_name] = layouts
+
+    # Stage 2: for each Adapter, union its own layouts + referenced ViewHolder layouts
+    adapter_layouts: dict[str, list[str]] = {}
+    for src_file in android_project.source_files(project_root):
+        class_name = src_file.stem
+        try:
+            source = src_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if not is_adapter_re.search(source):
+            continue
+        layouts: list[str] = list(file_layouts.get(class_name, []))
+        for vh_class, vh_layouts in file_layouts.items():
+            if vh_class == class_name:
+                continue
+            if vh_class in source:
+                for lname in vh_layouts:
+                    if lname not in layouts:
+                        layouts.append(lname)
+        if layouts:
+            adapter_layouts[class_name] = layouts
+
+    return adapter_layouts
+
+
+def _link_fragment_adapters(
+    project_root: str | Path,
+    adapter_item_map: dict[str, list[str]],
+) -> list[dict]:
+    """
+    Find which Fragment/Activity instantiates each Adapter, then emit
+    ``recycler_item`` edges  (host_class → item_layout_name).
+
+    Trigger ``recycler_item:<layout>`` is opaque so the assembler treats the hop
+    transparently: item layout elements surface directly under the host screen.
+    """
+    if not adapter_item_map:
+        return []
+
+    edges: list[dict] = []
+    for src_file in android_project.source_files(project_root):
+        class_name = src_file.stem
+        try:
+            source = src_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for adapter_class, item_layouts in adapter_item_map.items():
+            if adapter_class == class_name:
+                continue
+            if adapter_class not in source:
+                continue
+            # Require an actual instantiation or assignment, not just an import
+            if not re.search(rf'\b{re.escape(adapter_class)}\s*[=(]', source):
+                continue
+            for item_layout in item_layouts:
+                if any(
+                    e["from"] == class_name and e["to"] == item_layout
+                    for e in edges
+                ):
+                    continue
+                edges.append({
+                    "from": class_name,
+                    "to": item_layout,
+                    "to_layout": item_layout,
+                    "type": "recycler_item",
+                    "via": f"adapter:{adapter_class}",
+                    "trigger": f"recycler_item:{item_layout}",
+                    "line": 0,
+                    "user_visible": True,
+                })
+    return edges
+
+
+# ── TaskStackBuilder edges ────────────────────────────────────────────────────
+
+def _extract_taskstack_edges(project_root: str | Path) -> list[dict]:
+    """
+    Extract TaskStackBuilder.addNextIntent chains.
+
+    Handles both Kotlin (``XxxActivity::class.java``) and Java
+    (``new Intent(ctx, XxxActivity.class)``) syntax.
+    """
+    edges: list[dict] = []
+    for src_file in android_project.source_files(project_root):
+        try:
+            source = src_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "TaskStackBuilder" not in source:
+            continue
+        class_name = src_file.stem
+        # Kotlin: addNextIntent(Intent(ctx, XxxActivity::class.java))
+        for m in re.finditer(
+            r'addNextIntent\s*\([^)]*?Intent\([^,)]*,\s*(\w+)::class\.java',
+            source,
+        ):
+            target = m.group(1)
+            line = source[:m.start()].count("\n") + 1
+            trigger = _find_trigger_context(source, m.start(), class_name)
+            edges.append({
+                "from": class_name,
+                "to": target,
+                "to_layout": _find_layout_for_class(target),
+                "type": "task_stack",
+                "via": "TaskStackBuilder.addNextIntent",
+                "trigger": trigger,
+                "line": line,
+            })
+        # Java: addNextIntent(new Intent(context, XxxActivity.class))
+        for m in re.finditer(
+            r'addNextIntent\s*\(\s*new\s+Intent\([^,)]*,\s*(\w+)\.class\)',
+            source,
+        ):
+            target = m.group(1)
+            line = source[:m.start()].count("\n") + 1
+            trigger = _find_trigger_context(source, m.start(), class_name)
+            edges.append({
+                "from": class_name,
+                "to": target,
+                "to_layout": _find_layout_for_class(target),
+                "type": "task_stack",
+                "via": "TaskStackBuilder.addNextIntent",
+                "trigger": trigger,
+                "line": line,
+            })
+    return edges
+
+
+def _extract_proxy_call_edges(
+    all_edges: list[dict],
+    class_files: dict,  # class_name → Path
+) -> list[dict]:
+    """
+    Detect proxy launcher/navigator classes and emit caller→target edges.
+
+    A *proxy* class is one that:
+      • appears in all_edges as "from" (has outgoing navigation edges)
+      • has 0 incoming edges in all_edges
+      • does not end with Activity / Fragment / Dialog (is not itself a screen)
+
+    Examples that are auto-detected without hardcoding:
+      ActivityLauncher, ActivityNavigator, ReaderActivityLauncher, EditorLauncher …
+
+    Algorithm:
+      Phase A — collect proxy classes from current edge set
+      Phase B — build {proxy_class: {method_name: [target_class]}} from their edges
+                 (trigger field already encodes "fn: <method_name>")
+      Phase C — scan every source file; for each call site
+                   ProxyClass.method(...)      (static Java/Kotlin call)
+                   proxyVar.method(...)        (injected instance; type resolved via field decl)
+                 emit edge  caller → target
+    """
+    if not all_edges or not class_files:
+        return []
+
+    # Phase A: identify proxy classes
+    incoming_classes: set[str] = {e.get("to", "") for e in all_edges}
+    _SCREEN_SUFFIXES = ("Activity", "Fragment", "Dialog", "BottomSheet")
+
+    proxy_out_edges: dict[str, list[dict]] = {}
+    for e in all_edges:
+        src = e.get("from", "")
+        if not src:
+            continue
+        if src in incoming_classes:
+            continue
+        if any(src.endswith(s) for s in _SCREEN_SUFFIXES):
+            continue
+        if src == "EXTERNAL":
+            continue
+        proxy_out_edges.setdefault(src, []).append(e)
+
+    # Only keep proxies that navigate to at least one real class name (starts uppercase).
+    # This filters out utility helpers (WPPermissionUtils, ZendeskHelper) whose edge
+    # targets are method names like "showPermissionAlwaysDeniedDialog" — not classes.
+    proxy_out_edges = {
+        src: edges
+        for src, edges in proxy_out_edges.items()
+        if any(e.get("to", "")[:1].isupper() for e in edges)
+    }
+
+    if not proxy_out_edges:
+        return []
+
+    # Phase B: build {proxy_class: {method_name: [target]}} index
+    # Extract method name from trigger "fn: someMethod" or "setup: SomeMethod"
+    _FN_TRIGGER_RE = re.compile(r'(?:fn:|setup:)\s*(\w+)', re.IGNORECASE)
+
+    proxy_method_targets: dict[str, dict[str, list[str]]] = {}
+    for proxy_cls, edges in proxy_out_edges.items():
+        method_map: dict[str, list[str]] = {}
+        for e in edges:
+            trigger = e.get("trigger", "")
+            target = e.get("to", "")
+            if not target:
+                continue
+            fn_m = _FN_TRIGGER_RE.match(trigger)
+            if fn_m:
+                method_name = fn_m.group(1)
+                if target not in method_map.setdefault(method_name, []):
+                    method_map[method_name].append(target)
+
+        # Fallback: scan the proxy's own source file for method bodies
+        # that call startActivity with Kotlin or Java Intent syntax.
+        src_file = class_files.get(proxy_cls)
+        if src_file:
+            try:
+                proxy_src = src_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                proxy_src = ""
+            if proxy_src:
+                _METHOD_DECL_RE = re.compile(
+                    r'(?:public\s+static\s+\w+|fun)\s+(\w+)\s*\('
+                )
+                # Find every method in the proxy file and collect its Intent targets
+                for mdecl in _METHOD_DECL_RE.finditer(proxy_src):
+                    mname = mdecl.group(1)
+                    body = _find_function_body(proxy_src, mname, max_len=4000)
+                    if not body:
+                        continue
+                    # Kotlin ::class.java
+                    for tm in re.finditer(
+                        r'Intent\s*\([^,)]+,\s*(\w+)::class\.java', body
+                    ):
+                        tgt = tm.group(1)
+                        if tgt not in method_map.setdefault(mname, []):
+                            method_map[mname].append(tgt)
+                    # Java .class
+                    for tm in re.finditer(
+                        r'new\s+Intent\s*\([^,)]+,\s*(\w+)\.class\s*\)', body
+                    ):
+                        tgt = tm.group(1)
+                        if tgt not in method_map.setdefault(mname, []):
+                            method_map[mname].append(tgt)
+                    # createIntent factory pattern
+                    for tm in re.finditer(
+                        r'startActivity\s*\([^)]*?(\w+)\.createIntent\s*\(', body
+                    ):
+                        tgt = tm.group(1)
+                        if tgt not in method_map.setdefault(mname, []):
+                            method_map[mname].append(tgt)
+
+        if method_map:
+            proxy_method_targets[proxy_cls] = method_map
+
+    if not proxy_method_targets:
+        return []
+
+    # Phase C: scan all source files for call sites
+    new_edges: list[dict] = []
+    existing_key: set[tuple] = {
+        (e.get("from", ""), e.get("to", ""), e.get("trigger", ""), e.get("line", 0))
+        for e in all_edges
+    }
+
+    # Regex to find instance-field declarations typed as a proxy class:
+    #   lateinit var navigator: ActivityNavigator
+    #   val activityNavigator: ActivityNavigator
+    #   @Inject lateinit var launcher: ActivityLauncher
+    _FIELD_TYPE_RE = re.compile(
+        r'(?:@\w+\s+)*(?:lateinit\s+)?(?:val|var)\s+(\w+)\s*:\s*(\w+)'
+    )
+
+    for caller_class, src_file in class_files.items():
+        # Skip proxy classes themselves to avoid self-loop noise
+        if caller_class in proxy_method_targets:
+            continue
+        try:
+            source = src_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        # Build var_name → proxy_class map for this file
+        var_to_proxy: dict[str, str] = {}
+        for fm in _FIELD_TYPE_RE.finditer(source):
+            var_name = fm.group(1)
+            type_name = fm.group(2)
+            if type_name in proxy_method_targets:
+                var_to_proxy[var_name] = type_name
+
+        # Scan for call sites: Receiver.method(  where Receiver is proxy or var of proxy type
+        for cm in re.finditer(r'\b(\w+)\s*\.\s*(\w+)\s*\(', source):
+            receiver = cm.group(1)
+            method = cm.group(2)
+
+            # Determine proxy class
+            if receiver in proxy_method_targets:
+                proxy_cls = receiver          # static: ActivityLauncher.foo(...)
+            elif receiver in var_to_proxy:
+                proxy_cls = var_to_proxy[receiver]  # instance: navigator.foo(...)
+            else:
+                continue
+
+            targets = proxy_method_targets[proxy_cls].get(method, [])
+            if not targets:
+                continue
+
+            line = source[:cm.start()].count('\n') + 1
+            trigger = _find_trigger_context(source, cm.start(), caller_class)
+
+            for target in targets:
+                key = (caller_class, target, trigger, line)
+                if key in existing_key:
+                    continue
+                existing_key.add(key)
+                new_edges.append({
+                    "from": caller_class,
+                    "to": target,
+                    "to_layout": _find_layout_for_class(target),
+                    "type": "activity",
+                    "via": f"proxy:{proxy_cls}.{method}()",
+                    "trigger": trigger,
+                    "line": line,
+                })
+
+    return new_edges
+
+
 def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
     global _INFERRED_LAYOUTS, _ALL_KNOWN_LAYOUTS
 
@@ -812,6 +1507,10 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
     for src_file in src_files:
         source = src_file.read_text(encoding="utf-8", errors="ignore")
         class_name = _extract_class_name(src_file)
+        # Skip Kotlin/Java synthetic anonymous-inner-class files (contain $).
+        # These are compiler-generated lambda/inner-class artefacts, not real screens.
+        if "$" in class_name:
+            continue
         class_files[class_name] = src_file
         edges = _extract_edges_from_file(src_file, source)
         all_edges.extend(edges)
@@ -833,6 +1532,9 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
                 all_edges.extend(dep_nav.navigation_edges)
         except Exception:
             pass
+
+    # --- Fix Point 6: Proxy launcher / navigator call-site tracing ---
+    all_edges.extend(_extract_proxy_call_edges(all_edges, class_files))
 
     # --- L2: generic createIntent / local Intent variable (nav_pipeline) ---
     from extractors import nav_pipeline
@@ -860,6 +1562,16 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
     # --- Fix Point 1: Adapter-Host Activity binding (regex fallback) ---
     adapter_edges = _resolve_adapter_bindings(all_edges, root)
     all_edges.extend(adapter_edges)
+
+    # --- Fix Point 3: BottomNav / TabLayout edges (additive) ---
+    all_edges.extend(_extract_bottomnav_edges(root))
+
+    # --- Fix Point 4: RecyclerView adapter → item layout edges (additive) ---
+    _adapter_item_map = _extract_adapter_item_layouts(root)
+    all_edges.extend(_link_fragment_adapters(root, _adapter_item_map))
+
+    # --- Fix Point 5: TaskStackBuilder edges (additive) ---
+    all_edges.extend(_extract_taskstack_edges(root))
 
     # --- Bytecode analysis (if available) ---
     try:

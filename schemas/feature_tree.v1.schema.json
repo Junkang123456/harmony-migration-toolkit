@@ -43,7 +43,8 @@
             "ui_control",
             "behavior",
             "function_symbol",
-            "implementation"
+            "implementation",
+            "tab"
           ]
         },
         "label": { "type": "string" },
@@ -96,7 +97,8 @@
             "evidence_in_file",
             "triggers",
             "enters",
-            "calls"
+            "calls",
+            "tab_of"
           ]
         },
         "determinism": { "type": "string", "enum": ["rule", "static_analysis"] },
