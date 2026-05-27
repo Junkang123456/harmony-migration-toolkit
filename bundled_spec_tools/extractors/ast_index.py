@@ -271,6 +271,7 @@ class ClassInfo:
     interfaces: list[str]
     source_file: str
     language: str
+    line: int = 0
 
 
 _ANDROID_FRAGMENT_BASES = {
@@ -352,35 +353,45 @@ def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
     return _resolve_android_base(base, hierarchy, visited)
 
 
-def build_class_hierarchy(project_root: str) -> dict[str, ClassInfo]:
+def build_class_hierarchy(
+    project_root: str,
+    dep_roots: list[str] | None = None,
+    file_prefix: str = "",
+) -> dict[str, ClassInfo]:
     """构建项目全量类索引，含继承关系。"""
     hierarchy: dict[str, ClassInfo] = {}
-    root = Path(project_root)
-    for src_path in _source_files(root):
-        language = _language_for(src_path)
-        if language is None or not language:
-            continue
-        try:
-            parser = get_parser(language)
-            source = src_path.read_bytes()
-            tree = parser.parse(source.decode("utf-8"))
-        except Exception:
-            continue
-        root_node = tree.root_node()
-        rel = _rel_path(src_path, root)
-        for node in _walk(root_node):
-            if node.kind() not in ("class_declaration", "object_declaration", "interface_declaration"):
+    roots: list[tuple[str, str]] = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for src_path in _source_files(root):
+            language = _language_for(src_path)
+            if language is None or not language:
                 continue
-            name = _class_name(source, node)
-            if not name:
+            try:
+                parser = get_parser(language)
+                source = src_path.read_bytes()
+                tree = parser.parse(source.decode("utf-8"))
+            except Exception:
                 continue
-            hierarchy[name] = ClassInfo(
-                name=name,
-                base_class=_extract_base_class(source, node, language),
-                interfaces=[],
-                source_file=rel,
-                language=language,
-            )
+            root_node = tree.root_node()
+            rel = _rel_path(src_path, root, prefix)
+            for node in _walk(root_node):
+                if node.kind() not in ("class_declaration", "object_declaration", "interface_declaration"):
+                    continue
+                name = _class_name(source, node)
+                if not name:
+                    continue
+                hierarchy[name] = ClassInfo(
+                    name=name,
+                    base_class=_extract_base_class(source, node, language),
+                    interfaces=[],
+                    source_file=rel,
+                    language=language,
+                    line=_line(node),
+                )
     return hierarchy
 
 
