@@ -1,48 +1,62 @@
 {
   "schema_version": "1.0",
   "stats": {
-    "source_files_scanned": 1,
-    "symbol_count": 3
+    "ast_symbol_count": 0,
+    "source_files_scanned": 3,
+    "symbol_count": 4
   },
   "symbols": [
     {
       "class_name": "MainActivity",
       "confidence": "regex",
-      "end_line": 10,
+      "end_line": 21,
       "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
       "function_name": "onCreate",
       "kind": "function",
       "language": "kotlin",
       "package": "com.verifyfix.minimal",
       "signature": "savedInstanceState: Bundle?",
-      "start_line": 7,
+      "start_line": 10,
       "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
     },
     {
       "class_name": "MainActivity",
       "confidence": "regex",
-      "end_line": 14,
+      "end_line": 26,
       "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
       "function_name": "openSettings",
       "kind": "function",
       "language": "kotlin",
       "package": "com.verifyfix.minimal",
       "signature": "",
-      "start_line": 12,
+      "start_line": 22,
       "symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
     },
     {
-      "class_name": "MainActivity",
+      "class_name": "SettingsActivity",
       "confidence": "regex",
-      "end_line": 18,
-      "file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
-      "function_name": "showSettings",
+      "end_line": 10,
+      "file": "app/src/main/java/com/verifyfix/minimal/SettingsActivity.kt",
+      "function_name": "onCreate",
       "kind": "function",
       "language": "kotlin",
       "package": "com.verifyfix.minimal",
-      "signature": "",
-      "start_line": 16,
-      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.showSettings/0"
+      "signature": "savedInstanceState: Bundle?",
+      "start_line": 7,
+      "symbol_id": "fn:com.verifyfix.minimal.SettingsActivity.onCreate/1"
+    },
+    {
+      "class_name": "SettingsFragment",
+      "confidence": "regex",
+      "end_line": 14,
+      "file": "app/src/main/java/com/verifyfix/minimal/SettingsFragment.kt",
+      "function_name": "onCreateView",
+      "kind": "function",
+      "language": "kotlin",
+      "package": "com.verifyfix.minimal",
+      "signature": "inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?",
+      "start_line": 10,
+      "symbol_id": "fn:com.verifyfix.minimal.SettingsFragment.onCreateView/3"
     }
   ]
 }

@@ -1,19 +1,27 @@
 package com.verifyfix.minimal
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
+import android.widget.Button
+import androidx.fragment.app.FragmentActivity
 
-class MainActivity : Activity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        openSettings()
+        setContentView(R.layout.activity_main)
+
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.fragment_container, SettingsFragment())
+            .commit()
+
+        findViewById<Button>(R.id.btn_settings).setOnClickListener {
+            openSettings()
+        }
     }
 
     private fun openSettings() {
-        showSettings()
-    }
-
-    private fun showSettings() {
-        setContentView(R.layout.activity_main)
+        val intent = Intent(this, SettingsActivity::class.java)
+        startActivity(intent)
     }
 }

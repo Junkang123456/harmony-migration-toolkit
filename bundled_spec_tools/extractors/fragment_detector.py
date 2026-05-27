@@ -95,7 +95,7 @@ def _scan_source_files(project_root: str, dep_roots: list[str] | None,
 
 def run(project_root: str, dep_roots: list[str] | None = None,
         file_prefix: str = "") -> dict:
-    fragments: list[dict] = {}.__class__([])  # type: list[dict]
+    fragments: list[dict] = []
     files_scanned = 0
 
     source_files = _scan_source_files(project_root, dep_roots, file_prefix)

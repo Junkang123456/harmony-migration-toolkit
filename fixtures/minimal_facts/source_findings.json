@@ -1,9 +1,26 @@
 {
   "findings": {
+    "data_driven_ui": [],
+    "event_registrations": [],
     "id_dispatchers": [],
-    "event_registrations": []
+    "inflates": [
+      {
+        "enclosing_fn": "override fun onCreateView(",
+        "file": "app\\src\\main\\java\\com\\verifyfix\\minimal\\SettingsFragment.kt",
+        "kind": "inflate_layout",
+        "layout": "fragment_settings",
+        "line": 13
+      }
+    ],
+    "visibility_controls": []
   },
   "stats": {
-    "source_files_scanned": 1
+    "data_driven_ui": 0,
+    "event_registrations": 0,
+    "findings_with_enclosing_symbol": 0,
+    "id_dispatchers": 0,
+    "inflates": 1,
+    "source_files_scanned": 3,
+    "visibility_controls": 0
   }
 }

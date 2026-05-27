@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor
+from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor, fragment_detector
 from extractors.dependency_resolver import resolve_dependencies
 from generate_specs import generate_all_specs
 
@@ -221,6 +221,15 @@ def main():
     for t, c in by_type.items():
         print(f"    {t}: {c}")
 
+    # Step 4b: Fragment 检测
+    print("\n[4b] Detecting fragments...")
+    frag_result = fragment_detector.run(project_root, dep_roots=dep_roots)
+    (out_dir / "fragments.json").write_text(
+        json.dumps(frag_result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    fs = frag_result["stats"]
+    print(f"  Fragments: {fs['total']} (by method: {fs.get('by_attach_method', {})})")
+
     # Step 5: Gap 合并
     gap_path = out_dir / "gap_analysis.json"
     gap = {"stats": {"total_resolved": 0, "by_gap_type": {}, "merged_into_gt": False}, "resolved": []}
@@ -403,6 +412,7 @@ def main():
     for name in ["static_xml.json", "source_findings.json", "ground_truth.json",
                  "function_symbols.json", "call_graph.json",
                  "navigation_graph.json", "navigation_candidates.json",
+                 "fragments.json",
                  "gap_analysis.json", "ui_dag.json",
                  "ui_paths.json", "ui_paths_legacy.json", "ui_paths_report.json",
                  "ui_effect_paths.json",

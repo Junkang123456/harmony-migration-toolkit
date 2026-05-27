@@ -1,12 +1,219 @@
 {
-  "elements": [],
-  "stats": {
-    "total": 2,
-    "interactive": 2,
-    "hidden_by_default": 0,
-    "by_source": {
-      "static_xml_layout": 2
+  "elements": [
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "hint": "",
+      "id": "",
+      "is_interactive": true,
+      "layout": "activity_main",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "FrameLayout",
+      "text": "",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "hint": "",
+      "id": "hello",
+      "is_interactive": true,
+      "layout": "activity_main",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "TextView",
+      "text": "Hello",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "hint": "",
+      "id": "fragment_container",
+      "is_interactive": true,
+      "layout": "activity_main",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "FrameLayout",
+      "text": "",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "hint": "",
+      "id": "btn_settings",
+      "is_interactive": true,
+      "layout": "activity_main",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "Button",
+      "text": "Settings",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\activity_settings.xml",
+      "hint": "",
+      "id": "",
+      "is_interactive": true,
+      "layout": "activity_settings",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "LinearLayout",
+      "text": "",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\activity_settings.xml",
+      "hint": "",
+      "id": "settings_header",
+      "is_interactive": true,
+      "layout": "activity_settings",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "TextView",
+      "text": "Settings Screen",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\fragment_settings.xml",
+      "hint": "",
+      "id": "",
+      "is_interactive": true,
+      "layout": "fragment_settings",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "LinearLayout",
+      "text": "",
+      "visibility": "visible"
+    },
+    {
+      "content_desc": "",
+      "file": "main\\res\\layout\\fragment_settings.xml",
+      "hint": "",
+      "id": "settings_title",
+      "is_interactive": true,
+      "layout": "fragment_settings",
+      "on_click_attr": "",
+      "source": "static_xml_layout",
+      "tag": "TextView",
+      "text": "Settings",
+      "visibility": "visible"
     }
+  ],
+  "layout_trees": {
+    "activity_main": {
+      "children": [
+        {
+          "children": [],
+          "content_desc": "",
+          "hint": "",
+          "id": "hello",
+          "is_interactive": true,
+          "on_click_attr": "",
+          "source": "static_xml",
+          "tag": "TextView",
+          "text": "Hello",
+          "visibility": "visible"
+        },
+        {
+          "children": [],
+          "content_desc": "",
+          "hint": "",
+          "id": "fragment_container",
+          "is_interactive": true,
+          "on_click_attr": "",
+          "source": "static_xml",
+          "tag": "FrameLayout",
+          "text": "",
+          "visibility": "visible"
+        },
+        {
+          "children": [],
+          "content_desc": "",
+          "hint": "",
+          "id": "btn_settings",
+          "is_interactive": true,
+          "on_click_attr": "",
+          "source": "static_xml",
+          "tag": "Button",
+          "text": "Settings",
+          "visibility": "visible"
+        }
+      ],
+      "content_desc": "",
+      "hint": "",
+      "id": "",
+      "is_interactive": true,
+      "on_click_attr": "",
+      "source": "static_xml",
+      "tag": "FrameLayout",
+      "text": "",
+      "visibility": "visible"
+    },
+    "activity_settings": {
+      "children": [
+        {
+          "children": [],
+          "content_desc": "",
+          "hint": "",
+          "id": "settings_header",
+          "is_interactive": true,
+          "on_click_attr": "",
+          "source": "static_xml",
+          "tag": "TextView",
+          "text": "Settings Screen",
+          "visibility": "visible"
+        }
+      ],
+      "content_desc": "",
+      "hint": "",
+      "id": "",
+      "is_interactive": true,
+      "on_click_attr": "",
+      "source": "static_xml",
+      "tag": "LinearLayout",
+      "text": "",
+      "visibility": "visible"
+    },
+    "fragment_settings": {
+      "children": [
+        {
+          "children": [],
+          "content_desc": "",
+          "hint": "",
+          "id": "settings_title",
+          "is_interactive": true,
+          "on_click_attr": "",
+          "source": "static_xml",
+          "tag": "TextView",
+          "text": "Settings",
+          "visibility": "visible"
+        }
+      ],
+      "content_desc": "",
+      "hint": "",
+      "id": "",
+      "is_interactive": true,
+      "on_click_attr": "",
+      "source": "static_xml",
+      "tag": "LinearLayout",
+      "text": "",
+      "visibility": "visible"
+    }
+  },
+  "stats": {
+    "by_source": {
+      "static_xml_layout": 8
+    },
+    "hidden_by_default": 0,
+    "interactive": 8,
+    "layout_tree_count": 3,
+    "total": 8
   },
   "strings": {}
 }
