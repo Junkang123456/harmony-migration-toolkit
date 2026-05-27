@@ -35,6 +35,12 @@ INTERACTIVE_TAGS = {
 def _attr(elem, local_name, ns=ANDROID_NS):
     return elem.get(f"{{{ns}}}{local_name}", "")
 
+def _attr_any_ns(elem, local_name):
+    for k, v in elem.attrib.items():
+        if k.endswith("}" + local_name) or k == local_name:
+            return v
+    return ""
+
 def _short_tag(full_tag: str) -> str:
     """去掉包名，只保留类名"""
     return full_tag.split(".")[-1]
@@ -93,6 +99,86 @@ def extract_layout(xml_path: Path, source_prefix: str = "static_xml_layout",
         })
 
     return results
+
+
+# ──────────────────────────────────────────────
+# Layout XML — tree form (preserves hierarchy)
+# ──────────────────────────────────────────────
+
+def _build_tree_node(elem, include_resolver=None) -> dict:
+    tag = elem.tag
+    if tag == "include":
+        layout_ref = _attr_any_ns(elem, "layout").replace("@layout/", "")
+        if layout_ref and include_resolver:
+            inc_path = include_resolver(layout_ref)
+            if inc_path:
+                try:
+                    inc_tree = ET.parse(inc_path)
+                except ET.ParseError:
+                    inc_tree = None
+                if inc_tree:
+                    inc_root = inc_tree.getroot()
+                    if _short_tag(inc_root.tag) == "merge":
+                        children = [_build_tree_node(c, include_resolver) for c in inc_root]
+                        return {"_merge_children": children}
+                    return _build_tree_node(inc_root, include_resolver)
+        return {
+            "tag": "include",
+            "id": "",
+            "text": "", "hint": "", "content_desc": "",
+            "is_interactive": False,
+            "visibility": "visible",
+            "source": "static_xml",
+            "on_click_attr": "",
+            "children": [],
+        }
+
+    short = _short_tag(tag)
+    view_id = _attr(elem, "id").replace("@+id/", "").replace("@id/", "")
+    on_click_attr = _attr(elem, "onClick")
+    clickable = _attr(elem, "clickable")
+    checkable = _attr(elem, "checkable")
+    visibility = _attr(elem, "visibility") or "visible"
+    text = _attr(elem, "text")
+    hint = _attr(elem, "hint")
+    content_desc = _attr(elem, "contentDescription")
+
+    is_interactive = (
+        short in INTERACTIVE_TAGS
+        or bool(on_click_attr)
+        or clickable == "true"
+        or checkable == "true"
+    )
+
+    children = []
+    for child in elem:
+        node = _build_tree_node(child, include_resolver)
+        if isinstance(node, dict) and "_merge_children" in node:
+            children.extend(node["_merge_children"])
+        else:
+            children.append(node)
+
+    return {
+        "tag": short,
+        "id": view_id,
+        "text": text,
+        "hint": hint,
+        "content_desc": content_desc,
+        "is_interactive": is_interactive,
+        "visibility": visibility,
+        "source": "static_xml",
+        "on_click_attr": on_click_attr,
+        "children": children,
+    }
+
+
+def extract_layout_tree(xml_path: Path, include_resolver=None) -> dict | None:
+    try:
+        tree = ET.parse(xml_path)
+    except ET.ParseError:
+        return None
+    root = tree.getroot()
+    return _build_tree_node(root, include_resolver)
 
 
 # ──────────────────────────────────────────────
@@ -237,14 +323,28 @@ def run(project_root: str, source_prefix: str = "static_xml_layout",
         file_prefix: str = "") -> dict:
     res_dirs = android_project.res_dirs(project_root)
 
+    # Build include resolver: layout_name → Path
+    layout_file_map: dict[str, Path] = {}
+    for res in res_dirs:
+        for layout_dir in res.glob("layout*"):
+            for f in layout_dir.glob("*.xml"):
+                layout_file_map[f.stem] = f
+
+    def _include_resolver(name: str) -> Path | None:
+        return layout_file_map.get(name)
+
     strings = load_strings(project_root)
     all_elements = []
+    layout_trees: dict[str, dict] = {}
 
     for res in res_dirs:
         for layout_dir in res.glob("layout*"):
             for f in layout_dir.glob("*.xml"):
                 all_elements.extend(extract_layout(
                     f, source_prefix=source_prefix, file_prefix=file_prefix))
+                tree_node = extract_layout_tree(f, include_resolver=_include_resolver)
+                if tree_node is not None:
+                    layout_trees[f.stem] = tree_node
 
         menu_dir = res / "menu"
         if menu_dir.exists():
@@ -269,13 +369,14 @@ def run(project_root: str, source_prefix: str = "static_xml_layout",
         "total":          len(all_elements),
         "interactive":    sum(1 for e in all_elements if e.get("is_interactive")),
         "hidden_by_default": sum(1 for e in all_elements if e.get("visibility") in ("gone", "invisible")),
+        "layout_tree_count": len(layout_trees),
         "by_source": {},
     }
     for e in all_elements:
         s = e["source"]
         stats["by_source"][s] = stats["by_source"].get(s, 0) + 1
 
-    return {"elements": all_elements, "stats": stats, "strings": strings}
+    return {"elements": all_elements, "layout_trees": layout_trees, "stats": stats, "strings": strings}
 
 
 if __name__ == "__main__":

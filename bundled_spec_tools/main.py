@@ -104,6 +104,8 @@ def main():
             file_prefix=dep_name,
         )
         xml_result["elements"].extend(dep_xml["elements"])
+        for lt_name, lt_tree in dep_xml.get("layout_trees", {}).items():
+            xml_result.setdefault("layout_trees", {})[lt_name] = lt_tree
         xml_result["stats"]["total"] += dep_xml["stats"].get("total", 0)
         xml_result["stats"]["interactive"] += dep_xml["stats"].get("interactive", 0)
         xml_result["stats"]["hidden_by_default"] += dep_xml["stats"].get("hidden_by_default", 0)
