@@ -2,12 +2,26 @@
 fragment_detector.py
 Detect Fragment subclasses and their attachment patterns in Android source code.
 Outputs structured JSON with fragment metadata.
+
+Uses regex as baseline and optionally tree-sitter AST for comprehensive
+class-declaration scanning (coverage report).
 """
 import re
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from extractors import android_project
+
+try:
+    from tree_sitter_language_pack import get_parser as _get_parser
+except Exception:
+    _get_parser = None
+
+_FRAGMENT_BASE_CLASSES = {
+    "Fragment", "DialogFragment", "BottomSheetDialogFragment",
+    "PreferenceFragmentCompat", "ListFragment", "MapFragment",
+    "SupportMapFragment", "PreferenceFragment",
+}
 
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 
@@ -77,6 +91,104 @@ def _is_fragment_name(name: str) -> bool:
     fragment_suffixes = ("Fragment", "BottomSheet", "DialogFragment",
                          "BottomSheetDialogFragment", "PreferenceFragment")
     return any(name.endswith(s) for s in fragment_suffixes) or "Fragment" in name
+
+
+def _ast_find_fragment_classes(project_root: str, dep_roots: list[str] | None,
+                               file_prefix: str) -> list[dict]:
+    """Use tree-sitter to find ALL class declarations extending Fragment base classes."""
+    if _get_parser is None:
+        return []
+
+    results: list[dict] = []
+    roots = [(project_root, file_prefix)] + [
+        (d, Path(d).name) for d in (dep_roots or [])
+    ]
+
+    for root, prefix in roots:
+        for src_path in android_project.source_files(root):
+            lang = "kotlin" if src_path.suffix == ".kt" else "java" if src_path.suffix == ".java" else ""
+            if not lang:
+                continue
+            try:
+                parser = _get_parser(lang)
+                source = src_path.read_bytes()
+                tree = parser.parse(source)
+            except Exception:
+                continue
+
+            rel = android_project.relative_to_root(src_path, root, prefix)
+            _collect_fragment_classes(source, tree.root_node, lang, rel, results)
+
+    return results
+
+
+def _collect_fragment_classes(source: bytes, root_node, language: str,
+                              rel_path: str, out: list[dict]) -> None:
+    """Walk AST to find class declarations extending Fragment-like base classes."""
+    for node in _walk_ast(root_node):
+        if node.type not in ("class_declaration", "object_declaration"):
+            continue
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        class_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="ignore")
+
+        superclasses = _extract_superclasses(source, node, language)
+        if superclasses & _FRAGMENT_BASE_CLASSES:
+            line = name_node.start_point[0] + 1
+            out.append({
+                "class": class_name,
+                "source_file": rel_path,
+                "line": line,
+                "base_class": next(iter(superclasses & _FRAGMENT_BASE_CLASSES)),
+                "detection": "ast",
+            })
+
+
+def _walk_ast(node):
+    yield node
+    for child in node.children:
+        yield from _walk_ast(child)
+
+
+def _extract_superclasses(source: bytes, class_node, language: str) -> set[str]:
+    """Extract superclass/interface names from a class declaration AST node."""
+    names: set[str] = set()
+    if language == "kotlin":
+        delegation = class_node.child_by_field_name("delegation_specifier")
+        for child in _walk_ast(class_node):
+            if child.type == "delegation_specifier":
+                for sub in child.children:
+                    if sub.type in ("user_type", "constructor_invocation"):
+                        text = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="ignore")
+                        name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
+                        if name:
+                            names.add(name)
+                break
+        if not names:
+            for child in _walk_ast(class_node):
+                if child.type == "super_type_list":
+                    for sub in child.named_children:
+                        text = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="ignore")
+                        name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
+                        if name:
+                            names.add(name)
+                    break
+    else:
+        superclass = class_node.child_by_field_name("superclass")
+        if superclass is not None:
+            text = source[superclass.start_byte:superclass.end_byte].decode("utf-8", errors="ignore")
+            name = text.split("<")[0].split(".")[-1].strip()
+            if name:
+                names.add(name)
+        interfaces = class_node.child_by_field_name("interfaces")
+        if interfaces is not None:
+            for child in interfaces.named_children:
+                text = source[child.start_byte:child.end_byte].decode("utf-8", errors="ignore")
+                name = text.split("<")[0].split(".")[-1].strip()
+                if name:
+                    names.add(name)
+    return names
 
 
 def _scan_source_files(project_root: str, dep_roots: list[str] | None,
@@ -226,11 +338,26 @@ def run(project_root: str, dep_roots: list[str] | None = None,
         m = f["attach_method"]
         by_method[m] = by_method.get(m, 0) + 1
 
+    # AST-based coverage: find all Fragment class declarations via tree-sitter
+    ast_classes = _ast_find_fragment_classes(project_root, dep_roots, file_prefix)
+    regex_class_names = {f["class"] for f in result_fragments}
+    ast_class_names = {c["class"] for c in ast_classes}
+    attached_classes = {f["class"] for f in result_fragments if f["attach_method"] != "class_declaration"}
+    orphan_classes = sorted(ast_class_names - attached_classes) if ast_classes else []
+
+    coverage: dict = {
+        "ast_available": len(ast_classes) > 0,
+        "declared_fragment_count": len(ast_class_names),
+        "attached_fragment_count": len(attached_classes),
+        "orphan_classes": orphan_classes,
+    }
+
     return {
         "fragments": result_fragments,
         "stats": {
             "total": len(result_fragments),
             "by_attach_method": by_method,
             "source_files_scanned": files_scanned,
+            "coverage": coverage,
         },
     }

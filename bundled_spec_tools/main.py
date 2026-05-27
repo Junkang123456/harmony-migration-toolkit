@@ -229,6 +229,12 @@ def main():
     )
     fs = frag_result["stats"]
     print(f"  Fragments: {fs['total']} (by method: {fs.get('by_attach_method', {})})")
+    cov = fs.get("coverage", {})
+    if cov.get("ast_available"):
+        print(f"  Coverage: {cov['attached_fragment_count']}/{cov['declared_fragment_count']} "
+              f"declared fragments have known host")
+        if cov.get("orphan_classes"):
+            print(f"  Orphan fragments (no known host): {cov['orphan_classes']}")
 
     # Step 5: Gap 合并
     gap_path = out_dir / "gap_analysis.json"
