@@ -1,0 +1,8 @@
+{
+  "entry_path_ids_sample": [],
+  "feature_id": "ft:settingsactivity",
+  "related_nav_edge_ids": [],
+  "related_ui_point_ids": [
+    "up:activity_settings:settings_header"
+  ]
+}

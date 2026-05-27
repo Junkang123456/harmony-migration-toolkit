@@ -89,26 +89,28 @@ def _language_for(path: Path) -> str:
 
 
 def _node_text(source: bytes, node: Any) -> str:
-    return source[node.start_byte : node.end_byte].decode("utf-8", errors="ignore")
+    return source[node.start_byte() : node.end_byte()].decode("utf-8", errors="ignore")
 
 
 def _line(node: Any) -> int:
-    return int(node.start_point[0]) + 1
+    return int(node.start_position().row) + 1
 
 
 def _end_line(node: Any) -> int:
-    return int(node.end_point[0]) + 1
+    return int(node.end_position().row) + 1
 
 
 def _walk(node: Any):
     yield node
-    for child in node.children:
+    for i in range(node.child_count()):
+        child = node.child(i)
         yield from _walk(child)
 
 
 def _first_named_child(node: Any, types: set[str]) -> Any | None:
-    for child in node.named_children:
-        if child.type in types:
+    for i in range(node.named_child_count()):
+        child = node.named_child(i)
+        if child.kind() in types:
             return child
     return None
 
@@ -116,34 +118,35 @@ def _first_named_child(node: Any, types: set[str]) -> Any | None:
 def _last_identifier_text(source: bytes, node: Any) -> str:
     names: list[str] = []
     for child in _walk(node):
-        if child.type in {"identifier", "simple_identifier", "type_identifier"}:
+        if child.kind() in {"identifier", "simple_identifier", "type_identifier"}:
             names.append(_node_text(source, child))
     return names[-1] if names else ""
 
 
 def _package_name(source: bytes, root: Any, language: str) -> str:
-    for child in root.named_children:
-        if language == "kotlin" and child.type == "package_header":
-            simples = [_node_text(source, n) for n in _walk(child) if n.type == "simple_identifier"]
+    for i in range(root.named_child_count()):
+        child = root.named_child(i)
+        if language == "kotlin" and child.kind() == "package_header":
+            simples = [_node_text(source, n) for n in _walk(child) if n.kind() == "simple_identifier"]
             if simples:
                 return ".".join(simples)
             ident = _first_named_child(child, {"identifier"})
             return _node_text(source, ident) if ident is not None else ""
-        if language == "java" and child.type == "package_declaration":
-            names = [_node_text(source, n) for n in _walk(child) if n.type == "identifier"]
+        if language == "java" and child.kind() == "package_declaration":
+            names = [_node_text(source, n) for n in _walk(child) if n.kind() == "identifier"]
             return ".".join(names)
     return ""
 
 
 def _owner_stack(source: bytes, node: Any, fallback: str) -> list[str]:
     owners: list[str] = []
-    cur = node.parent
+    cur = node.parent()
     while cur is not None:
-        if cur.type in {"class_declaration", "object_declaration", "interface_declaration", "enum_declaration"}:
+        if cur.kind() in {"class_declaration", "object_declaration", "interface_declaration", "enum_declaration"}:
             name = _class_name(source, cur)
             if name:
                 owners.append(name)
-        cur = cur.parent
+        cur = cur.parent()
     return list(reversed(owners)) or [fallback]
 
 
@@ -194,18 +197,18 @@ def _symbol_id(package: str, owners: list[str], function_name: str, signature: s
 
 
 def _is_function_node(node: Any) -> bool:
-    return node.type in {"function_declaration", "method_declaration", "constructor_declaration"}
+    return node.kind() in {"function_declaration", "method_declaration", "constructor_declaration"}
 
 
 def _call_name(source: bytes, node: Any) -> str:
-    if node.type == "method_invocation":
+    if node.kind() == "method_invocation":
         name = node.child_by_field_name("name")
         return _node_text(source, name) if name is not None else _last_identifier_text(source, node)
-    if node.type == "object_creation_expression":
+    if node.kind() == "object_creation_expression":
         typ = node.child_by_field_name("type") or _first_named_child(node, {"type_identifier", "scoped_type_identifier"})
         return _last_identifier_text(source, typ) if typ is not None else ""
-    if node.type == "call_expression":
-        first = node.named_children[0] if node.named_children else None
+    if node.kind() == "call_expression":
+        first = node.named_child(0) if node.named_child_count() > 0 else None
         return _last_identifier_text(source, first) if first is not None else ""
     return ""
 
@@ -216,13 +219,18 @@ def _call_arg_count(source: bytes, node: Any) -> int:
         args = _first_named_child(node, {"value_arguments", "argument_list"})
     if args is None:
         return 0
-    return sum(1 for c in args.named_children if c.type not in {",", "(", ")"})
+    count = 0
+    for i in range(args.named_child_count()):
+        c = args.named_child(i)
+        if c.kind() not in {",", "(", ")"}:
+            count += 1
+    return count
 
 
 def _call_receiver(source: bytes, node: Any) -> str:
-    if node.type != "call_expression" or not node.named_children:
+    if node.kind() != "call_expression" or node.named_child_count() == 0:
         return ""
-    first = node.named_children[0]
+    first = node.named_child(0)
     text = _node_text(source, first)
     if "." not in text:
         return ""
@@ -284,14 +292,15 @@ def build_project_index(
         try:
             parser = get_parser(language)
             source = src_path.read_bytes()
-            tree = parser.parse(source)
+            tree = parser.parse(source.decode("utf-8"))
         except Exception:
             continue
         rel = _rel_path(src_path, root, file_prefix)
-        file_roots.append((src_path, source, language, rel, tree.root_node))
-        package = _package_name(source, tree.root_node, language)
+        root_node = tree.root_node()
+        file_roots.append((src_path, source, language, rel, root_node))
+        package = _package_name(source, root_node, language)
         fallback_owner = src_path.stem
-        for node in _walk(tree.root_node):
+        for node in _walk(root_node):
             if not _is_function_node(node):
                 continue
             function_name = _function_name(source, node, language)
@@ -328,7 +337,7 @@ def build_project_index(
     for _src_path, source, _language, rel, root_node in file_roots:
         file_symbols = by_file.get(rel, [])
         for node in _walk(root_node):
-            if node.type not in {"call_expression", "method_invocation", "object_creation_expression"}:
+            if node.kind() not in {"call_expression", "method_invocation", "object_creation_expression"}:
                 continue
             callee_name = _call_name(source, node)
             if not callee_name or callee_name in _SKIP_CALLS:

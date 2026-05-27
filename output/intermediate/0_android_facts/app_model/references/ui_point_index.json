@@ -1,0 +1,62 @@
+{
+  "up:activity_main:btn_settings": {
+    "behavior_refs": [],
+    "content_desc": "",
+    "element_id": "btn_settings",
+    "hint": "",
+    "is_interactive": true,
+    "layout": "activity_main",
+    "tag": "Button",
+    "text_raw": "Settings",
+    "ui_point_id": "up:activity_main:btn_settings",
+    "virtual": false
+  },
+  "up:activity_main:fragment_container": {
+    "behavior_refs": [],
+    "content_desc": "",
+    "element_id": "fragment_container",
+    "hint": "",
+    "is_interactive": true,
+    "layout": "activity_main",
+    "tag": "FrameLayout",
+    "text_raw": "",
+    "ui_point_id": "up:activity_main:fragment_container",
+    "virtual": false
+  },
+  "up:activity_main:hello": {
+    "behavior_refs": [],
+    "content_desc": "",
+    "element_id": "hello",
+    "hint": "",
+    "is_interactive": true,
+    "layout": "activity_main",
+    "tag": "TextView",
+    "text_raw": "Hello",
+    "ui_point_id": "up:activity_main:hello",
+    "virtual": false
+  },
+  "up:activity_settings:settings_header": {
+    "behavior_refs": [],
+    "content_desc": "",
+    "element_id": "settings_header",
+    "hint": "",
+    "is_interactive": true,
+    "layout": "activity_settings",
+    "tag": "TextView",
+    "text_raw": "Settings Screen",
+    "ui_point_id": "up:activity_settings:settings_header",
+    "virtual": false
+  },
+  "up:fragment_settings:settings_title": {
+    "behavior_refs": [],
+    "content_desc": "",
+    "element_id": "settings_title",
+    "hint": "",
+    "is_interactive": true,
+    "layout": "fragment_settings",
+    "tag": "TextView",
+    "text_raw": "Settings",
+    "ui_point_id": "up:fragment_settings:settings_title",
+    "virtual": false
+  }
+}

@@ -93,6 +93,13 @@ def _is_fragment_name(name: str) -> bool:
     return any(name.endswith(s) for s in fragment_suffixes) or "Fragment" in name
 
 
+def _walk_ast(node):
+    yield node
+    for i in range(node.child_count()):
+        child = node.child(i)
+        yield from _walk_ast(child)
+
+
 def _ast_find_fragment_classes(project_root: str, dep_roots: list[str] | None,
                                file_prefix: str) -> list[dict]:
     """Use tree-sitter to find ALL class declarations extending Fragment base classes."""
@@ -112,30 +119,40 @@ def _ast_find_fragment_classes(project_root: str, dep_roots: list[str] | None,
             try:
                 parser = _get_parser(lang)
                 source = src_path.read_bytes()
-                tree = parser.parse(source)
+                tree = parser.parse(source.decode("utf-8"))
             except Exception:
                 continue
 
             rel = android_project.relative_to_root(src_path, root, prefix)
-            _collect_fragment_classes(source, tree.root_node, lang, rel, results)
+            _collect_fragment_classes(source, tree.root_node(), lang, rel, results)
 
     return results
+
+
+def source_slice(source: bytes, node) -> str:
+    return source[node.start_byte():node.end_byte()].decode("utf-8", errors="ignore")
 
 
 def _collect_fragment_classes(source: bytes, root_node, language: str,
                               rel_path: str, out: list[dict]) -> None:
     """Walk AST to find class declarations extending Fragment-like base classes."""
     for node in _walk_ast(root_node):
-        if node.type not in ("class_declaration", "object_declaration"):
+        if node.kind() not in ("class_declaration", "object_declaration"):
             continue
         name_node = node.child_by_field_name("name")
         if name_node is None:
+            for i in range(node.named_child_count()):
+                c = node.named_child(i)
+                if c.kind() in ("type_identifier", "identifier"):
+                    name_node = c
+                    break
+        if name_node is None:
             continue
-        class_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="ignore")
+        class_name = source_slice(source, name_node)
 
         superclasses = _extract_superclasses(source, node, language)
         if superclasses & _FRAGMENT_BASE_CLASSES:
-            line = name_node.start_point[0] + 1
+            line = name_node.start_position().row + 1
             out.append({
                 "class": class_name,
                 "source_file": rel_path,
@@ -145,31 +162,26 @@ def _collect_fragment_classes(source: bytes, root_node, language: str,
             })
 
 
-def _walk_ast(node):
-    yield node
-    for child in node.children:
-        yield from _walk_ast(child)
-
-
 def _extract_superclasses(source: bytes, class_node, language: str) -> set[str]:
     """Extract superclass/interface names from a class declaration AST node."""
     names: set[str] = set()
     if language == "kotlin":
-        delegation = class_node.child_by_field_name("delegation_specifier")
         for child in _walk_ast(class_node):
-            if child.type == "delegation_specifier":
-                for sub in child.children:
-                    if sub.type in ("user_type", "constructor_invocation"):
-                        text = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="ignore")
+            if child.kind() == "delegation_specifier":
+                for i in range(child.child_count()):
+                    sub = child.child(i)
+                    if sub.kind() in ("user_type", "constructor_invocation"):
+                        text = source_slice(source, sub)
                         name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
                         if name:
                             names.add(name)
                 break
         if not names:
             for child in _walk_ast(class_node):
-                if child.type == "super_type_list":
-                    for sub in child.named_children:
-                        text = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="ignore")
+                if child.kind() == "super_type_list":
+                    for i in range(child.named_child_count()):
+                        sub = child.named_child(i)
+                        text = source_slice(source, sub)
                         name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
                         if name:
                             names.add(name)
@@ -177,14 +189,18 @@ def _extract_superclasses(source: bytes, class_node, language: str) -> set[str]:
     else:
         superclass = class_node.child_by_field_name("superclass")
         if superclass is not None:
-            text = source[superclass.start_byte:superclass.end_byte].decode("utf-8", errors="ignore")
-            name = text.split("<")[0].split(".")[-1].strip()
-            if name:
-                names.add(name)
+            for i in range(superclass.child_count()):
+                sub = superclass.child(i)
+                if sub.is_named():
+                    text = source_slice(source, sub)
+                    name = text.split("<")[0].split(".")[-1].strip()
+                    if name:
+                        names.add(name)
         interfaces = class_node.child_by_field_name("interfaces")
         if interfaces is not None:
-            for child in interfaces.named_children:
-                text = source[child.start_byte:child.end_byte].decode("utf-8", errors="ignore")
+            for i in range(interfaces.named_child_count()):
+                child = interfaces.named_child(i)
+                text = source_slice(source, child)
                 name = text.split("<")[0].split(".")[-1].strip()
                 if name:
                     names.add(name)

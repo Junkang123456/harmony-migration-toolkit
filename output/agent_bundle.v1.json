@@ -1,0 +1,329 @@
+{
+  "agent_hints": {
+    "gaps": "Use outline.migration.gap_count first, then open the framework map artifact for full gap details.",
+    "harmony_projection": "Open outline.artifacts.harmony_projection.path for deterministic HarmonyOS module/ability/route scaffolding input.",
+    "intermediate_artifacts": "intermediate_manifest lists reproducible stage artifacts for debugging; the bundle is the default agent input.",
+    "primary_graph": "Open outline.artifacts.feature_tree.path for the full canonical migration graph.",
+    "source_evidence": "Open outline.artifacts.evidence.path and feature_tree node evidence for deterministic source anchors.",
+    "stage0_inventory": "Open outline.artifacts.stage0_manifest.path — sha256/bytes index of each *.json under 0_android_facts/ produced by the static scan (the manifest file itself is written last and is not self-listed).",
+    "verification": "Treat verification.status=warn as usable with listed issues; unresolved calls indicate static-analysis limits."
+  },
+  "bundle_kind": "harmony_migration_agent_bundle",
+  "intermediate_manifest": {
+    "artifact_count": 37,
+    "artifacts": {
+      "0_android_facts/app_model/index.json": {
+        "bytes": 930
+      },
+      "0_android_facts/app_model/references/nav_edges.json": {
+        "bytes": 426
+      },
+      "0_android_facts/app_model/references/ui_point_index.json": {
+        "bytes": 1656
+      },
+      "0_android_facts/call_graph.json": {
+        "bytes": 6015
+      },
+      "0_android_facts/dynamic_ui.json": {
+        "bytes": 669
+      },
+      "0_android_facts/fragments.json": {
+        "bytes": 721
+      },
+      "0_android_facts/function_symbols.json": {
+        "bytes": 2100
+      },
+      "0_android_facts/ground_truth.json": {
+        "bytes": 2400
+      },
+      "0_android_facts/manifest.json": {
+        "bytes": 5055
+      },
+      "0_android_facts/navigation_candidates.json": {
+        "bytes": 602
+      },
+      "0_android_facts/navigation_graph.json": {
+        "bytes": 1360
+      },
+      "0_android_facts/source_findings.json": {
+        "bytes": 655
+      },
+      "0_android_facts/static_xml.json": {
+        "bytes": 5459
+      },
+      "0_android_facts/ui_dag.json": {
+        "bytes": 449
+      },
+      "0_android_facts/ui_effect_paths.json": {
+        "bytes": 309
+      },
+      "0_android_facts/ui_paths.json": {
+        "bytes": 3
+      },
+      "0_android_facts/ui_paths_coverage_report.json": {
+        "bytes": 345
+      },
+      "0_android_facts/ui_paths_enumerated.json": {
+        "bytes": 273
+      },
+      "0_android_facts/ui_paths_legacy.json": {
+        "bytes": 3
+      },
+      "0_android_facts/ui_paths_report.json": {
+        "bytes": 3
+      },
+      "1_android_facts/android_facts.v1.json": {
+        "bytes": 1028
+      },
+      "2_framework_map/framework_map.v1.json": {
+        "bytes": 2625
+      },
+      "3_harmony_arch/harmony_arch.v1.json": {
+        "bytes": 1090
+      },
+      "5_feature_tree/feature_spec_evidence.json": {
+        "bytes": 1084
+      },
+      "5_feature_tree/feature_tree.v1.json": {
+        "bytes": 12625
+      },
+      "5_feature_tree/taxonomy_report.json": {
+        "bytes": 1819
+      },
+      "5_feature_tree/verify_report.json": {
+        "bytes": 4115
+      }
+    },
+    "included_artifact_count": 27,
+    "omitted_artifact_count": 10,
+    "omitted_by_prefix": {
+      "0_android_facts/app_model/features/": 3,
+      "0_android_facts/app_model/paths/": 1,
+      "0_android_facts/app_model/screens/": 3,
+      "0_android_facts/specs/": 3
+    },
+    "root": "D:/Myfiles/a2h/arkts-migration/harmony-migration-toolkit/output/intermediate"
+  },
+  "meta": {
+    "feature_tree": {
+      "coverage": {
+        "behavior_total": 0,
+        "behaviors_with_call_chain": 0,
+        "behaviors_with_entry_symbol": 0,
+        "effect_path_attached_to_feature": 0,
+        "effect_path_attached_to_screen": 0,
+        "effect_path_total": 0,
+        "effect_path_unmatched": 0,
+        "effect_path_with_line": 0,
+        "effect_path_without_line": 0,
+        "feature_total": 2,
+        "features_with_line_evidence": 0,
+        "features_without_line_evidence": [
+          "feature:generated.minimal.fixtures",
+          "feature:generated.settings.minimal"
+        ],
+        "function_symbol_node_count": 4,
+        "line_evidence_node_count": 1,
+        "unresolved_call_count": 12
+      },
+      "edge_count": 13,
+      "edges_by_rel": {
+        "calls": 1,
+        "evidence_in_file": 1,
+        "navigates_to": 1,
+        "owns_ui": 6,
+        "parent_of": 4
+      },
+      "node_count": 16,
+      "nodes_by_kind": {
+        "feature": 2,
+        "function_symbol": 4,
+        "implementation": 1,
+        "product_root": 1,
+        "screen": 2,
+        "ui_control": 4,
+        "ui_surface": 2
+      }
+    },
+    "framework_rules_version": "2026.04.25",
+    "harmony_bundle_name": "com.verifyfix.minimal",
+    "taxonomy_summary": {
+      "feature_count": 2,
+      "generated_assigned_screen_count": 2,
+      "generated_feature_count": 2,
+      "matched_screen_count": 2,
+      "screen_total": 2,
+      "unmatched_screen_count": 0
+    },
+    "verification_status": "warn"
+  },
+  "outline": {
+    "app": {
+      "android_root": "D:/Myfiles/a2h/arkts-migration/harmony-migration-toolkit",
+      "gradle_modules": [],
+      "manifest": {
+        "application_id": "com.verifyfix.minimal",
+        "launcher_activity_class": "MainActivity",
+        "launcher_activity_qualified": "com.verifyfix.minimal.MainActivity",
+        "package": "com.verifyfix.minimal"
+      },
+      "navigation_summary": {
+        "activity_nodes": 2,
+        "dialog_nodes": 0,
+        "total_edges": 1,
+        "total_nodes": 2
+      },
+      "screens_count": 2,
+      "stage0_artifact_checks": {
+        "call_graph": {
+          "call_count": 1,
+          "stats_symbol_count": 4,
+          "symbol_count": 4
+        },
+        "function_symbols": {
+          "stats_symbol_count": 4,
+          "symbol_count": 4
+        },
+        "warnings": []
+      },
+      "ui_fidelity": "mixed",
+      "ui_paths_coverage": {
+        "exported_path_count": 0,
+        "launcher_class": "",
+        "layout_with_static_elements_count": 0,
+        "navigation_node_total": 0,
+        "reachable_navigation_screen_count": 0,
+        "runtime_entry_screen_count": 0,
+        "schema_version": "1.0",
+        "screen_total": 0,
+        "short_path_count": 0,
+        "uncovered_static_layout_count": 0,
+        "unmapped_layout_count": 0
+      },
+      "ui_paths_legacy_count": 0
+    },
+    "artifacts": {
+      "android_facts": {
+        "bytes": 1028,
+        "path": "intermediate/1_android_facts/android_facts.v1.json"
+      },
+      "evidence": {
+        "bytes": 1084,
+        "path": "intermediate/5_feature_tree/feature_spec_evidence.json"
+      },
+      "feature_tree": {
+        "bytes": 12625,
+        "path": "intermediate/5_feature_tree/feature_tree.v1.json"
+      },
+      "framework_mapping": {
+        "bytes": 2625,
+        "path": "intermediate/2_framework_map/framework_map.v1.json"
+      },
+      "harmony_projection": {
+        "bytes": 1090,
+        "path": "intermediate/3_harmony_arch/harmony_arch.v1.json"
+      },
+      "stage0_manifest": {
+        "bytes": 5055,
+        "path": "intermediate/0_android_facts/manifest.json"
+      },
+      "taxonomy": {
+        "bytes": 1819,
+        "path": "intermediate/5_feature_tree/taxonomy_report.json"
+      },
+      "verification": {
+        "bytes": 4115,
+        "path": "intermediate/5_feature_tree/verify_report.json"
+      }
+    },
+    "features": [
+      {
+        "feature_id": "generated.minimal.fixtures",
+        "label": "Minimal Fixtures Android",
+        "representative_screens": [
+          "MainActivity"
+        ],
+        "screen_count": 1,
+        "source": "generated",
+        "top_tokens": [
+          "minimal",
+          "fixtures",
+          "android",
+          "app",
+          "src",
+          "java"
+        ]
+      },
+      {
+        "feature_id": "generated.settings.minimal",
+        "label": "Settings Minimal Fixtures",
+        "representative_screens": [
+          "SettingsActivity"
+        ],
+        "screen_count": 1,
+        "source": "generated",
+        "top_tokens": [
+          "settings",
+          "minimal",
+          "fixtures",
+          "android",
+          "app",
+          "src"
+        ]
+      }
+    ],
+    "migration": {
+      "ability_count": 1,
+      "framework_rules_version": "2026.04.25",
+      "gap_count": 0,
+      "harmony_bundle_name": "com.verifyfix.minimal",
+      "module_count": 1,
+      "route_count": 2
+    },
+    "taxonomy": {
+      "generated": {
+        "assigned_screen_count": 2,
+        "generated_feature_count": 2,
+        "strategy": "deterministic_token_graph_clustering"
+      },
+      "report_ref": {
+        "bytes": 1819,
+        "path": "intermediate/5_feature_tree/taxonomy_report.json"
+      },
+      "source": "generated_taxonomy",
+      "summary": {
+        "feature_count": 2,
+        "generated_assigned_screen_count": 2,
+        "generated_feature_count": 2,
+        "matched_screen_count": 2,
+        "screen_total": 2,
+        "unmatched_screen_count": 0
+      }
+    },
+    "verification": {
+      "issue_count": 12,
+      "report_ref": {
+        "bytes": 4115,
+        "path": "intermediate/5_feature_tree/verify_report.json"
+      },
+      "status": "warn"
+    }
+  },
+  "schema_version": "1.0",
+  "summary": {
+    "behavior_count": 0,
+    "edge_count": 13,
+    "feature_count": 2,
+    "function_symbol_count": 4,
+    "gap_count": 0,
+    "implementation_count": 1,
+    "intermediate_artifact_count": 37,
+    "node_count": 16,
+    "screen_count": 2,
+    "taxonomy_matched_screen_count": 2,
+    "taxonomy_unmatched_screen_count": 0,
+    "ui_control_count": 4,
+    "ui_surface_count": 2,
+    "verification_issue_count": 12
+  }
+}

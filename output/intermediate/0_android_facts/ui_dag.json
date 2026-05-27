@@ -1,0 +1,23 @@
+{
+  "aggregate_stats": {
+    "elements": 0,
+    "interactive": 0,
+    "screens": 1,
+    "with_behavior": 0,
+    "with_navigation": 0
+  },
+  "depth": 0,
+  "max_depth": 8,
+  "screen": "activity_main",
+  "screen_class": "",
+  "screen_type": "activity",
+  "start_layout": "activity_main",
+  "stats": {
+    "interactive": 0,
+    "total_elements": 0,
+    "virtual_nav_items": 0,
+    "with_behavior": 0,
+    "with_navigation": 0
+  },
+  "ui_elements": []
+}

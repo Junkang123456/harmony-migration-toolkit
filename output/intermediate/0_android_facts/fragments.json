@@ -1,0 +1,26 @@
+{
+  "fragments": [
+    {
+      "attach_method": "FragmentTransaction.replace",
+      "class": "SettingsFragment",
+      "container_id": "fragment_container",
+      "host_class": "MainActivity",
+      "host_file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "line": 17,
+      "source_file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt"
+    }
+  ],
+  "stats": {
+    "by_attach_method": {
+      "FragmentTransaction.replace": 1
+    },
+    "coverage": {
+      "ast_available": false,
+      "attached_fragment_count": 1,
+      "declared_fragment_count": 0,
+      "orphan_classes": []
+    },
+    "source_files_scanned": 3,
+    "total": 1
+  }
+}

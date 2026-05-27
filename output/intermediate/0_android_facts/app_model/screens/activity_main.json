@@ -1,0 +1,34 @@
+{
+  "elements_preview": [
+    {
+      "has_behaviors": false,
+      "id": "hello",
+      "is_interactive": true,
+      "tag": "TextView",
+      "ui_point_id": "up:activity_main:hello"
+    },
+    {
+      "has_behaviors": false,
+      "id": "fragment_container",
+      "is_interactive": true,
+      "tag": "FrameLayout",
+      "ui_point_id": "up:activity_main:fragment_container"
+    },
+    {
+      "has_behaviors": false,
+      "id": "btn_settings",
+      "is_interactive": true,
+      "tag": "Button",
+      "ui_point_id": "up:activity_main:btn_settings"
+    }
+  ],
+  "layout": "activity_main",
+  "outgoing_nav_edge_ids": [
+    "ne:43a3cf2e75ce"
+  ],
+  "ui_point_ids": [
+    "up:activity_main:hello",
+    "up:activity_main:fragment_container",
+    "up:activity_main:btn_settings"
+  ]
+}

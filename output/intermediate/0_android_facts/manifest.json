@@ -1,0 +1,142 @@
+{
+  "android_root": "D:/Myfiles/a2h/arkts-migration/harmony-migration-toolkit",
+  "artifact_checks": {
+    "call_graph": {
+      "call_count": 1,
+      "stats_symbol_count": 4,
+      "symbol_count": 4
+    },
+    "function_symbols": {
+      "stats_symbol_count": 4,
+      "symbol_count": 4
+    },
+    "warnings": []
+  },
+  "artifacts": {
+    "app_model/features/ft_fragment_settings.json": {
+      "bytes": 179,
+      "sha256": "f0845ec1989523a1b2ed5cf4914a76964ac00430f477853bf2101b5312ee08cb"
+    },
+    "app_model/features/ft_mainactivity.json": {
+      "bytes": 266,
+      "sha256": "f9deb1cd5da49df20da8106e99dfd071c538d3d70c03a0cc82dff4b905b3dcaf"
+    },
+    "app_model/features/ft_settingsactivity.json": {
+      "bytes": 179,
+      "sha256": "045ad8818e0db302bb1c1b342623c6e6d7159f9eed12bfe6f9ff705b85849380"
+    },
+    "app_model/index.json": {
+      "bytes": 930,
+      "sha256": "6a940cf54325cd425d80361a21638fbd490de68c32bb63fdbca5e0550cc53779"
+    },
+    "app_model/paths/all_paths.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "app_model/references/nav_edges.json": {
+      "bytes": 426,
+      "sha256": "7fa6c8cded86f57985de45a4098bc29df1a95e7044be21cf108c4700d209b5ee"
+    },
+    "app_model/references/ui_point_index.json": {
+      "bytes": 1656,
+      "sha256": "d9efb5a0c192cd6332ded2b10846c2de41e8f4848d31d7095d8cc8b8c05fd7c0"
+    },
+    "app_model/screens/activity_main.json": {
+      "bytes": 786,
+      "sha256": "2129e64c298b57c4a52b995c683359744be5bba62d30e12a06e58cfeed1aae68"
+    },
+    "app_model/screens/activity_settings.json": {
+      "bytes": 352,
+      "sha256": "5e6e3efe2c63b5f70dc148c2252e24afdc3c32c89f90d0b2498f54aeef50a746"
+    },
+    "app_model/screens/fragment_settings.json": {
+      "bytes": 349,
+      "sha256": "9519f3ab8a2a5fe6fe14e22f14a4e73727128fda45c34cd6f1d4bba22d9209e0"
+    },
+    "call_graph.json": {
+      "bytes": 6015,
+      "sha256": "e05a38afdf6d5e40ee7eb176499227dd396c3fbfda26e5f93a963c4f2d441b2c"
+    },
+    "dynamic_ui.json": {
+      "bytes": 669,
+      "sha256": "8b0fb4ee59fa560d53482fb8368a6b7a20d4e08745357749128e4f341d7938e1"
+    },
+    "fragments.json": {
+      "bytes": 721,
+      "sha256": "6f68a954051bb3c9dcbda7ab110f283503109fe2ebf9fdee049b393a14d4b80e"
+    },
+    "function_symbols.json": {
+      "bytes": 2100,
+      "sha256": "9ff3d8dbc22fb15de6c8d528b1d4d059471042a5c965f7bd60b8655b62bd0059"
+    },
+    "ground_truth.json": {
+      "bytes": 2400,
+      "sha256": "b4fefce38358f62257226a9911a5cd5aaf7c0d4cc5f26411f5eda8b77b55e087"
+    },
+    "navigation_candidates.json": {
+      "bytes": 602,
+      "sha256": "5e64b75818595ca37ea5ace8ce421d5577f23d03a2c6fdb7e67c53ae88bf04ca"
+    },
+    "navigation_graph.json": {
+      "bytes": 1360,
+      "sha256": "01dc35267082795771a4deb3cce271ddce92ff25dedf7623d155e7297356f492"
+    },
+    "source_findings.json": {
+      "bytes": 655,
+      "sha256": "1b1a3c9aeb26393c3ec04479a266fe29579c900ed9cb15461ed1ff44bcd883cf"
+    },
+    "specs/activity_main_spec.json": {
+      "bytes": 1268,
+      "sha256": "32138c6f1c13ec3813ff7c9ced3da3ac81180bbabee5271a27b18944eac21a65"
+    },
+    "specs/activity_settings_spec.json": {
+      "bytes": 795,
+      "sha256": "5c5ecf3f7e3342a5d2bd3e607aacc65db9e847b70a973fc8185ce447aea2caad"
+    },
+    "specs/fragment_settings_spec.json": {
+      "bytes": 897,
+      "sha256": "09f2e3453ec37ef916d6d65cb674772f9a45b8a097e86b8b2b0848daf0096118"
+    },
+    "static_xml.json": {
+      "bytes": 5459,
+      "sha256": "20838dedf657e50c1fd704a75c71963c52b0af49bee2573e3f986e2a8674c759"
+    },
+    "ui_dag.json": {
+      "bytes": 449,
+      "sha256": "04acac8047c25769a23b2094a5c4e49ceab9fecde83c7404ebb11e56079621e5"
+    },
+    "ui_effect_paths.json": {
+      "bytes": 309,
+      "sha256": "53defedd7f0e3bd7aa0a88c4e7c71517c742e24642bebba0de7d2cf1cb5d20ca"
+    },
+    "ui_paths.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "ui_paths_coverage_report.json": {
+      "bytes": 345,
+      "sha256": "bff65efe8a344e8fc90d927c7d71e9354f55b5837411072dde07891ce5db722f"
+    },
+    "ui_paths_enumerated.json": {
+      "bytes": 273,
+      "sha256": "9a2e4f5d4ba07ca504d7be8a0c043d72a99b4f5a4943867ff60c6e99500ec24b"
+    },
+    "ui_paths_legacy.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "ui_paths_report.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    }
+  },
+  "facts_source": null,
+  "generated_at": "2026-05-27T08:42:30.302103+00:00",
+  "spec_tools": {
+    "git_commit": "857e59cca92089124ccb1b667388c224c612a2cc",
+    "main_py_bytes": 19123,
+    "main_py_sha256": "1707b24c20a59ec915555cb13b889552e7e52c92ce6ae48811404bf4d0ba9f1f",
+    "root": "D:/Myfiles/a2h/arkts-migration/harmony-migration-toolkit/bundled_spec_tools"
+  },
+  "spec_tools_root": "D:/Myfiles/a2h/arkts-migration/harmony-migration-toolkit/bundled_spec_tools"
+}

@@ -1,0 +1,59 @@
+{
+  "behaviors": [],
+  "class": "MainActivity",
+  "dynamic_ui": [],
+  "layout": "activity_main",
+  "navigation": {
+    "entry_points": [],
+    "exit_points": [
+      {
+        "destination": "SettingsActivity",
+        "destination_layout": "activity_settings",
+        "trigger": "l2:localIntent:L32",
+        "type": "activity",
+        "via": "startActivity(local Intent)"
+      }
+    ]
+  },
+  "screen_id": "activity_main",
+  "screen_type": "activity",
+  "source": "project",
+  "stats": {
+    "conditional_visibility": 0,
+    "dynamic_gaps": 0,
+    "interactive": 3,
+    "nav_in": 0,
+    "nav_out": 1,
+    "total_elements": 3,
+    "with_behavior": 0
+  },
+  "ui_elements": [
+    {
+      "behaviors": [],
+      "condition": "",
+      "id": "hello",
+      "is_interactive": true,
+      "label": "Hello",
+      "type": "TextView",
+      "visibility": "always"
+    },
+    {
+      "behaviors": [],
+      "condition": "",
+      "id": "fragment_container",
+      "is_interactive": true,
+      "label": "",
+      "type": "FrameLayout",
+      "visibility": "always"
+    },
+    {
+      "behaviors": [],
+      "condition": "",
+      "id": "btn_settings",
+      "is_interactive": true,
+      "label": "Settings",
+      "type": "Button",
+      "visibility": "always"
+    }
+  ]
+}

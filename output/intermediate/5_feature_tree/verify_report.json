@@ -1,0 +1,121 @@
+{
+  "issues": [
+    {
+      "callee_name": "setContentView",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 14,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "beginTransaction",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 16,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "SettingsFragment",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 17,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "replace",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 17,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "commit",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 18,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "TextView",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 25,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "setText",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 26,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "addView",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 27,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1"
+    },
+    {
+      "callee_name": "Intent",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 31,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
+    },
+    {
+      "callee_name": "startActivity",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
+      "kind": "unresolved_call",
+      "line": 32,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.MainActivity.openSettings/0"
+    },
+    {
+      "callee_name": "setContentView",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/SettingsActivity.kt",
+      "kind": "unresolved_call",
+      "line": 9,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.SettingsActivity.onCreate/1"
+    },
+    {
+      "callee_name": "inflate",
+      "file": "fixtures/minimal_android/app/src/main/java/com/verifyfix/minimal/SettingsFragment.kt",
+      "kind": "unresolved_call",
+      "line": 13,
+      "reason": "unresolved",
+      "severity": "warn",
+      "symbol_id": "fn:com.verifyfix.minimal.SettingsFragment.onCreateView/3"
+    }
+  ],
+  "schema_version": "1.0",
+  "source": "feature_tree.v1.json",
+  "status": "warn",
+  "summary": {
+    "fail_count": 0,
+    "issue_count": 12,
+    "node_count": 16,
+    "warn_count": 12
+  }
+}

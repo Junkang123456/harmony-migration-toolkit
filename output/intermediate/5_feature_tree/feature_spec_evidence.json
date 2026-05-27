@@ -1,0 +1,44 @@
+{
+  "features": [
+    {
+      "behaviors": [],
+      "call_chains": [],
+      "coverage_gaps": [
+        "missing_source_anchor",
+        "missing_entry_function"
+      ],
+      "entry_functions": [],
+      "feature_id": "generated.minimal.fixtures",
+      "label": "Minimal Fixtures Android",
+      "node_id": "feature:generated.minimal.fixtures",
+      "screens": [
+        "screen:MainActivity",
+        "screen:SettingsActivity"
+      ],
+      "source_anchors": []
+    },
+    {
+      "behaviors": [],
+      "call_chains": [],
+      "coverage_gaps": [
+        "missing_source_anchor",
+        "missing_entry_function"
+      ],
+      "entry_functions": [],
+      "feature_id": "generated.settings.minimal",
+      "label": "Settings Minimal Fixtures",
+      "node_id": "feature:generated.settings.minimal",
+      "screens": [
+        "screen:SettingsActivity"
+      ],
+      "source_anchors": []
+    }
+  ],
+  "meta": {
+    "feature_count": 2,
+    "features_with_anchors": 0,
+    "features_with_entry_functions": 0
+  },
+  "schema_version": "1.0",
+  "source": "feature_tree.v1.json"
+}

@@ -19,6 +19,15 @@ from jsonschema import validators
 # Allow `python pipeline.py` from toolkit root without installing as package
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Support TREE_SITTER_CACHE_DIR env var for offline machines (parser DLLs)
+_cache_dir = __import__("os").environ.get("TREE_SITTER_CACHE_DIR")
+if _cache_dir:
+    try:
+        from tree_sitter_language_pack import configure, PackConfig
+        configure(PackConfig(cache_dir=_cache_dir))
+    except Exception:
+        pass
+
 from stages.build_android_facts import build_android_facts
 from stages.build_feature_tree import build_feature_tree
 from stages.build_framework_map import build_framework_map

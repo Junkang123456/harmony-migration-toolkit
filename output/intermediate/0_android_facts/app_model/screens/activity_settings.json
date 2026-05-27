@@ -1,0 +1,16 @@
+{
+  "elements_preview": [
+    {
+      "has_behaviors": false,
+      "id": "settings_header",
+      "is_interactive": true,
+      "tag": "TextView",
+      "ui_point_id": "up:activity_settings:settings_header"
+    }
+  ],
+  "layout": "activity_settings",
+  "outgoing_nav_edge_ids": [],
+  "ui_point_ids": [
+    "up:activity_settings:settings_header"
+  ]
+}

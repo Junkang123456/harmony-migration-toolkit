@@ -66,6 +66,15 @@ def _print_spec_report(flat: list, dag: dict) -> None:
 
 
 def main():
+    # Support TREE_SITTER_CACHE_DIR env var for offline machines (parser DLLs)
+    _cache_dir = __import__("os").environ.get("TREE_SITTER_CACHE_DIR")
+    if _cache_dir:
+        try:
+            from tree_sitter_language_pack import configure, PackConfig
+            configure(PackConfig(cache_dir=_cache_dir))
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description="Generate static Android facts for harmony-migration-toolkit")
     parser.add_argument("android_project_root", nargs="?", default=".", help="Android project root")
     parser.add_argument(
