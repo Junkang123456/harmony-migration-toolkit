@@ -101,6 +101,16 @@ def test_pipeline_minimal_fixture_schema():
     assert frag["container_id"] == "fragment_container"
     assert frag["attach_method"] == "FragmentTransaction.replace"
 
+    # P1: dynamic_ui
+    dyn = json.loads((inter / "0_android_facts" / "dynamic_ui.json").read_text(encoding="utf-8"))
+    assert isinstance(dyn["dynamic_elements"], list)
+    assert dyn["stats"]["total_dynamic_elements"] >= 1
+    elem = dyn["dynamic_elements"][0]
+    assert elem["view_type"] == "TextView"
+    assert elem["creation_method"] == "addView"
+    assert elem["host_class"] == "MainActivity"
+    assert elem["properties"]["text"] == "Loading..."
+
 
 def test_stage0_bundled_scanner_uses_isolated_output(tmp_path: Path):
     out = tmp_path / "stage0"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor, fragment_detector
+from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor, fragment_detector, dynamic_ui_extractor
 from extractors.dependency_resolver import resolve_dependencies
 from generate_specs import generate_all_specs
 
@@ -236,6 +236,17 @@ def main():
         if cov.get("orphan_classes"):
             print(f"  Orphan fragments (no known host): {cov['orphan_classes']}")
 
+    # Step 4c: 动态 UI 检测
+    print("\n[4c] Detecting dynamic UI components...")
+    dyn_result = dynamic_ui_extractor.run(project_root, dep_roots=dep_roots)
+    (out_dir / "dynamic_ui.json").write_text(
+        json.dumps(dyn_result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    ds = dyn_result["stats"]
+    print(f"  Dynamic elements: {ds['total_dynamic_elements']} "
+          f"(by method: {ds.get('by_creation_method', {})})")
+    print(f"  Adapter layouts: {ds['total_adapter_layouts']}")
+
     # Step 5: Gap 合并
     gap_path = out_dir / "gap_analysis.json"
     gap = {"stats": {"total_resolved": 0, "by_gap_type": {}, "merged_into_gt": False}, "resolved": []}
@@ -419,6 +430,7 @@ def main():
                  "function_symbols.json", "call_graph.json",
                  "navigation_graph.json", "navigation_candidates.json",
                  "fragments.json",
+                 "dynamic_ui.json",
                  "gap_analysis.json", "ui_dag.json",
                  "ui_paths.json", "ui_paths_legacy.json", "ui_paths_report.json",
                  "ui_effect_paths.json",

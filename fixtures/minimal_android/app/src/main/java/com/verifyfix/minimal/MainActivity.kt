@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.fragment.app.FragmentActivity
 
 class MainActivity : FragmentActivity() {
@@ -18,6 +20,11 @@ class MainActivity : FragmentActivity() {
         findViewById<Button>(R.id.btn_settings).setOnClickListener {
             openSettings()
         }
+
+        val container = findViewById<FrameLayout>(R.id.fragment_container)
+        val statusView = TextView(this)
+        statusView.setText("Loading...")
+        container.addView(statusView)
     }
 
     private fun openSettings() {

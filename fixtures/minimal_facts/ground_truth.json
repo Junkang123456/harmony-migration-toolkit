@@ -1,91 +1,91 @@
 {
-  "coverage_stats": {
-    "data_driven_ui": 0,
-    "dynamic_gap_pure_new": 0,
-    "dynamic_gap_total": 1,
-    "unmatched": 0,
-    "xml_conditional_visibility": 0,
-    "xml_elements_total": 5,
-    "xml_interactive": 5,
-    "xml_with_behavior_bound": 0
-  },
+  "static_elements": [
+    {
+      "source": "static_xml_layout",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "layout": "activity_main",
+      "tag": "TextView",
+      "id": "hello",
+      "text": "Hello",
+      "hint": "",
+      "content_desc": "",
+      "on_click_attr": "",
+      "visibility": "visible",
+      "is_interactive": true
+    },
+    {
+      "source": "static_xml_layout",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "layout": "activity_main",
+      "tag": "FrameLayout",
+      "id": "fragment_container",
+      "text": "",
+      "hint": "",
+      "content_desc": "",
+      "on_click_attr": "",
+      "visibility": "visible",
+      "is_interactive": true
+    },
+    {
+      "source": "static_xml_layout",
+      "file": "main\\res\\layout\\activity_main.xml",
+      "layout": "activity_main",
+      "tag": "Button",
+      "id": "btn_settings",
+      "text": "Settings",
+      "hint": "",
+      "content_desc": "",
+      "on_click_attr": "",
+      "visibility": "visible",
+      "is_interactive": true
+    },
+    {
+      "source": "static_xml_layout",
+      "file": "main\\res\\layout\\activity_settings.xml",
+      "layout": "activity_settings",
+      "tag": "TextView",
+      "id": "settings_header",
+      "text": "Settings Screen",
+      "hint": "",
+      "content_desc": "",
+      "on_click_attr": "",
+      "visibility": "visible",
+      "is_interactive": true
+    },
+    {
+      "source": "static_xml_layout",
+      "file": "main\\res\\layout\\fragment_settings.xml",
+      "layout": "fragment_settings",
+      "tag": "TextView",
+      "id": "settings_title",
+      "text": "Settings",
+      "hint": "",
+      "content_desc": "",
+      "on_click_attr": "",
+      "visibility": "visible",
+      "is_interactive": true
+    }
+  ],
   "dynamic_gap": [
     {
+      "source": "inflate_layout",
+      "layout": "fragment_settings",
       "binding_class": "",
       "enclosing_fn": "override fun onCreateView(",
       "file": "app\\src\\main\\java\\com\\verifyfix\\minimal\\SettingsFragment.kt",
-      "in_static_xml": true,
-      "layout": "fragment_settings",
       "line": 13,
-      "source": "inflate_layout"
+      "in_static_xml": true
     }
   ],
-  "static_elements": [
-    {
-      "content_desc": "",
-      "file": "main\\res\\layout\\activity_main.xml",
-      "hint": "",
-      "id": "hello",
-      "is_interactive": true,
-      "layout": "activity_main",
-      "on_click_attr": "",
-      "source": "static_xml_layout",
-      "tag": "TextView",
-      "text": "Hello",
-      "visibility": "visible"
-    },
-    {
-      "content_desc": "",
-      "file": "main\\res\\layout\\activity_main.xml",
-      "hint": "",
-      "id": "fragment_container",
-      "is_interactive": true,
-      "layout": "activity_main",
-      "on_click_attr": "",
-      "source": "static_xml_layout",
-      "tag": "FrameLayout",
-      "text": "",
-      "visibility": "visible"
-    },
-    {
-      "content_desc": "",
-      "file": "main\\res\\layout\\activity_main.xml",
-      "hint": "",
-      "id": "btn_settings",
-      "is_interactive": true,
-      "layout": "activity_main",
-      "on_click_attr": "",
-      "source": "static_xml_layout",
-      "tag": "Button",
-      "text": "Settings",
-      "visibility": "visible"
-    },
-    {
-      "content_desc": "",
-      "file": "main\\res\\layout\\activity_settings.xml",
-      "hint": "",
-      "id": "settings_header",
-      "is_interactive": true,
-      "layout": "activity_settings",
-      "on_click_attr": "",
-      "source": "static_xml_layout",
-      "tag": "TextView",
-      "text": "Settings Screen",
-      "visibility": "visible"
-    },
-    {
-      "content_desc": "",
-      "file": "main\\res\\layout\\fragment_settings.xml",
-      "hint": "",
-      "id": "settings_title",
-      "is_interactive": true,
-      "layout": "fragment_settings",
-      "on_click_attr": "",
-      "source": "static_xml_layout",
-      "tag": "TextView",
-      "text": "Settings",
-      "visibility": "visible"
-    }
-  ],
-  "unmatched": []
+  "unmatched": [],
+  "coverage_stats": {
+    "xml_elements_total": 5,
+    "xml_interactive": 5,
+    "xml_with_behavior_bound": 0,
+    "xml_conditional_visibility": 0,
+    "dynamic_gap_total": 1,
+    "dynamic_gap_pure_new": 0,
+    "data_driven_ui": 0,
+    "unmatched": 0
+  }
 }

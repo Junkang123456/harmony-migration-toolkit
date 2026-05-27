@@ -1,58 +1,58 @@
 {
-  "class_layouts": {
-    "MainActivity": "activity_main",
-    "SettingsActivity": "activity_settings"
+  "nodes": {
+    "MainActivity": {
+      "name": "MainActivity",
+      "layout": "activity_main",
+      "type": "activity",
+      "navigates_to": [
+        "SettingsActivity"
+      ],
+      "navigated_from": [],
+      "edges_out": 1,
+      "edges_in": 0
+    },
+    "SettingsActivity": {
+      "name": "SettingsActivity",
+      "layout": "activity_settings",
+      "type": "activity",
+      "navigates_to": [],
+      "navigated_from": [
+        "MainActivity"
+      ],
+      "edges_out": 0,
+      "edges_in": 1
+    }
   },
   "edges": [
     {
       "from": "MainActivity",
-      "line": 25,
-      "source_file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt",
       "to": "SettingsActivity",
       "to_layout": "activity_settings",
-      "trigger": "l2:localIntent:L25",
       "type": "activity",
-      "via": "startActivity(local Intent)"
+      "via": "startActivity(local Intent)",
+      "trigger": "l2:localIntent:L32",
+      "line": 32,
+      "source_file": "app/src/main/java/com/verifyfix/minimal/MainActivity.kt"
     }
   ],
-  "meta": {
-    "launcher_activity": "MainActivity",
-    "nav_pipeline_version": "1.0",
-    "nav_rules_version": "0",
-    "navigation_candidates_output": "navigation_candidates.json"
-  },
-  "nodes": {
-    "MainActivity": {
-      "edges_in": 0,
-      "edges_out": 1,
-      "layout": "activity_main",
-      "name": "MainActivity",
-      "navigated_from": [],
-      "navigates_to": [
-        "SettingsActivity"
-      ],
-      "type": "activity"
-    },
-    "SettingsActivity": {
-      "edges_in": 1,
-      "edges_out": 0,
-      "layout": "activity_settings",
-      "name": "SettingsActivity",
-      "navigated_from": [
-        "MainActivity"
-      ],
-      "navigates_to": [],
-      "type": "activity"
-    }
-  },
   "stats": {
+    "total_nodes": 2,
+    "total_edges": 1,
     "activity_nodes": 2,
-    "by_type": {
-      "activity": 1
-    },
     "dialog_nodes": 0,
     "external_nodes": 0,
-    "total_edges": 1,
-    "total_nodes": 2
+    "by_type": {
+      "activity": 1
+    }
+  },
+  "class_layouts": {
+    "MainActivity": "activity_main",
+    "SettingsActivity": "activity_settings"
+  },
+  "meta": {
+    "nav_pipeline_version": "1.0",
+    "nav_rules_version": "0",
+    "launcher_activity": "MainActivity",
+    "navigation_candidates_output": "navigation_candidates.json"
   }
 }
