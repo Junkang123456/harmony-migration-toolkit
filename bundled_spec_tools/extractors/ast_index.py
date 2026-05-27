@@ -264,6 +264,126 @@ def _is_dialog_like(name: str) -> bool:
     return bool(re.search(r"(Dialog|DialogFragment|BottomSheet)$", name))
 
 
+@dataclass
+class ClassInfo:
+    name: str
+    base_class: str | None
+    interfaces: list[str]
+    source_file: str
+    language: str
+
+
+_ANDROID_FRAGMENT_BASES = {
+    "Fragment", "DialogFragment", "BottomSheetDialogFragment",
+    "PreferenceFragmentCompat", "ListFragment", "MapFragment",
+    "SupportMapFragment", "PreferenceFragment", "AppCompatDialogFragment",
+}
+
+_ANDROID_ACTIVITY_BASES = {
+    "Activity", "AppCompatActivity", "FragmentActivity", "ComponentActivity",
+    "ListActivity", "PreferenceActivity",
+}
+
+_ANDROID_DIALOG_BASES = {
+    "Dialog", "AlertDialog", "BottomSheetDialog",
+}
+
+
+def _extract_base_class(source: bytes, class_node, language: str) -> str | None:
+    if language == "java":
+        superclass = class_node.child_by_field_name("superclass")
+        if superclass is not None:
+            for i in range(superclass.named_child_count()):
+                child = superclass.named_child(i)
+                if child.kind() in {"type_identifier", "identifier"}:
+                    return _node_text(source, child)
+            text = _node_text(source, superclass)
+            for token in text.split():
+                token = token.strip()
+                if token and token not in ("extends", "implements") and token[0].isupper():
+                    return token.split("<")[0].split(".")[-1]
+        return None
+    for child in _walk(class_node):
+        if child.kind() == "delegation_specifier":
+            for i in range(child.named_child_count()):
+                sub = child.named_child(i)
+                if sub.kind() in ("user_type", "constructor_invocation"):
+                    text = _node_text(source, sub)
+                    name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
+                    if name:
+                        return name
+            break
+    for child in _walk(class_node):
+        if child.kind() == "super_type_list":
+            for i in range(child.named_child_count()):
+                sub = child.named_child(i)
+                text = _node_text(source, sub)
+                name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
+                if name:
+                    return name
+            break
+    return None
+
+
+def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
+                          visited: set[str] | None = None) -> str:
+    """沿继承链上溯，返回 fragment / activity / dialog / other。"""
+    if visited is None:
+        visited = set()
+    if kind in visited:
+        return "other"
+    visited.add(kind)
+
+    info = hierarchy.get(kind)
+    if info is None or info.base_class is None:
+        if kind.endswith("Fragment"):
+            return "fragment"
+        if kind.endswith("Activity"):
+            return "activity"
+        return "other"
+
+    base = info.base_class
+    if base in _ANDROID_FRAGMENT_BASES:
+        return "fragment"
+    if base in _ANDROID_ACTIVITY_BASES:
+        return "activity"
+    if base in _ANDROID_DIALOG_BASES:
+        return "dialog"
+    return _resolve_android_base(base, hierarchy, visited)
+
+
+def build_class_hierarchy(project_root: str) -> dict[str, ClassInfo]:
+    """构建项目全量类索引，含继承关系。"""
+    hierarchy: dict[str, ClassInfo] = {}
+    root = Path(project_root)
+    for src_path in _source_files(root):
+        language = _language_for(src_path)
+        if language is None or not language:
+            continue
+        try:
+            parser = get_parser(language)
+            source = src_path.read_bytes()
+            tree = parser.parse(source.decode("utf-8"))
+        except Exception:
+            continue
+        root_node = tree.root_node()
+        rel = _rel_path(src_path, root)
+        for node in _walk(root_node):
+            if node.kind() not in ("class_declaration", "object_declaration", "interface_declaration"):
+                continue
+            name = _class_name(source, node)
+            if not name:
+                continue
+            hierarchy[name] = ClassInfo(
+                name=name,
+                base_class=_extract_base_class(source, node, language),
+                interfaces=[],
+                source_file=rel,
+                language=language,
+            )
+    return hierarchy
+
+
 def _layout_for_class(class_name: str, resolver: Any | None) -> str:
     if resolver:
         try:
