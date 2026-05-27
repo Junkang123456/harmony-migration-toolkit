@@ -27,8 +27,11 @@ from collections import OrderedDict
 
 try:
     from extractors import ast_index
+    from extractors.ast_index import build_class_hierarchy, _resolve_android_base
 except Exception:  # pragma: no cover - optional AST layer
     ast_index = None  # type: ignore[assignment]
+    build_class_hierarchy = None
+    _resolve_android_base = None
 
 from extractors import android_project
 
@@ -606,9 +609,22 @@ def _find_function_body(source: str, fn_name: str, max_len: int = 3000) -> str:
     return _get_click_block(after, brace_pos, max_len)
 
 
+_HIERARCHY: dict | None = None
+
+
+def _node_type(class_name: str) -> str:
+    if _HIERARCHY is not None and _resolve_android_base is not None:
+        t = _resolve_android_base(class_name, _HIERARCHY)
+        if t in ("activity", "dialog", "fragment"):
+            return t if t != "fragment" else "activity"
+    if _is_dialog_class(class_name):
+        return "dialog"
+    return "activity"
+
+
 def _build_node(class_name: str, edges_from: list[dict], edges_to: list[dict]) -> dict:
     layout = _find_layout_for_class(class_name)
-    node_type = "dialog" if _is_dialog_class(class_name) else "activity"
+    node_type = _node_type(class_name)
     return {
         "name": class_name,
         "layout": layout,
@@ -891,11 +907,28 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
     )
     unique_edges = nav_pipeline.dedupe_edges(unique_edges)
 
+    # Build AST hierarchy for Activity/Dialog type resolution
+    global _HIERARCHY
+    if build_class_hierarchy is not None:
+        try:
+            _HIERARCHY = build_class_hierarchy(str(root), dep_roots)
+        except Exception:
+            _HIERARCHY = None
+    else:
+        _HIERARCHY = None
+
     # Build nodes
     all_class_names = set()
     for e in unique_edges:
         all_class_names.add(e["from"])
         all_class_names.add(e["to"])
+    # Add AST-detected Activity classes as explicit nodes
+    if _HIERARCHY and _resolve_android_base is not None:
+        for name, info in _HIERARCHY.items():
+            if _resolve_android_base(name, _HIERARCHY) in ("activity", "dialog"):
+                all_class_names.add(name)
+                if name not in _INFERRED_LAYOUTS and info.base_class:
+                    _INFERRED_LAYOUTS[name] = _find_layout_for_class(name)
 
     nodes = {}
     for cn in sorted(all_class_names):
