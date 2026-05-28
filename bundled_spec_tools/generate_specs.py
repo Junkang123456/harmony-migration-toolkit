@@ -11,7 +11,10 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def generate_all_specs(nav, gt, paths, dag, specs_dir):
+def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
+                       layout_trees=None, fragments=None,
+                       dynamic_elements=None, behavior_chains=None,
+                       spec_version="1.0"):
     """为导航图中的每个屏幕生成 HarmonyOS 迁移 spec。"""
     specs_dir = Path(specs_dir)
     specs_dir.mkdir(parents=True, exist_ok=True)
@@ -226,6 +229,71 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir):
                 "nav_in": len(nav_in),
             },
         }
+
+        # ── v2 extensions ──
+        if spec_version >= "2.0":
+            spec["spec_version"] = spec_version
+
+            # L0_structure
+            ui_tree = None
+            if layout_trees and layout_name in layout_trees:
+                ui_tree = layout_trees[layout_name]
+
+            screen_fragments = []
+            if fragments:
+                all_ids = {e.get("id", "") for e in elements if e.get("id")}
+                for frag in fragments:
+                    cid = frag.get("container_id", "")
+                    host = frag.get("host_class", "")
+                    if cid in all_ids or host == class_name:
+                        screen_fragments.append({
+                            "class": frag.get("class", ""),
+                            "container_id": cid,
+                            "attach_method": frag.get("attach_method", ""),
+                        })
+
+            screen_dynamic = []
+            if dynamic_elements:
+                for de in dynamic_elements:
+                    if de.get("host_class", "") == class_name:
+                        screen_dynamic.append({
+                            "view_type": de.get("view_type", ""),
+                            "creation_method": de.get("creation_method", ""),
+                            "container_id": de.get("container_id", ""),
+                            "properties": de.get("properties", {}),
+                        })
+
+            spec["L0_structure"] = {
+                "ui_tree": ui_tree,
+                "fragments": screen_fragments,
+                "dynamic_elements": screen_dynamic,
+            }
+
+            # L1_behavior
+            event_bindings = []
+            if behavior_chains:
+                all_ids = {e.get("id", "") for e in elements if e.get("id")}
+                for bc in behavior_chains:
+                    eid = bc.get("element_id", "")
+                    if eid in all_ids or bc.get("handler", {}).get("file", "").replace("\\", "/").find(class_name) >= 0:
+                        event_bindings.append({
+                            "element_id": eid,
+                            "event_type": bc.get("event_type", ""),
+                            "handler_method": bc.get("handler", {}).get("method", ""),
+                            "effect_chain": bc.get("effect_chain", []),
+                            "chain_depth": bc.get("chain_depth", 0),
+                        })
+
+            spec["L1_behavior"] = {
+                "event_bindings": event_bindings,
+            }
+
+            spec["stats"]["fragments"] = len(screen_fragments)
+            spec["stats"]["dynamic_elements"] = len(screen_dynamic)
+            spec["stats"]["event_bindings"] = len(event_bindings)
+            spec["stats"]["event_bindings_with_chain"] = sum(
+                1 for eb in event_bindings if eb.get("effect_chain")
+            )
 
         out_path = specs_dir / f"{layout_name}_spec.json"
         out_path.write_text(json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8")

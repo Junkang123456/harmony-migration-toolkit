@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor, fragment_detector, dynamic_ui_extractor
+from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor, fragment_detector, dynamic_ui_extractor, behavior_chain_extractor
 from extractors.dependency_resolver import resolve_dependencies
 from generate_specs import generate_all_specs
 
@@ -96,18 +96,9 @@ def main():
         action="store_true",
         help="Run verification after extraction and produce verification_report.json",
     )
-    parser.add_argument(
-        "--module",
-        type=str,
-        default=None,
-        help="Restrict scanning to a specific module subdirectory (e.g. app, app-wearos)",
-    )
     args = parser.parse_args()
 
     project_root = args.android_project_root
-    if args.module:
-        project_root = str(Path(project_root) / args.module)
-        print(f"Module-restricted mode: {args.module}")
 
     out_dir = (args.out or (Path(__file__).parent / "output")).resolve()
     if out_dir.exists():
@@ -279,6 +270,17 @@ def main():
           f"(by method: {ds.get('by_creation_method', {})})")
     print(f"  Adapter layouts: {ds['total_adapter_layouts']}")
 
+    # Step 4d: 行为链提取
+    print("\n[4d] Extracting behavior chains...")
+    bc_result = behavior_chain_extractor.run(src_result, call_graph_payload, project_root)
+    (out_dir / "behavior_chains.json").write_text(
+        json.dumps(bc_result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    bcs = bc_result["stats"]
+    print(f"  Bindings: {bcs['total_bindings']}, with chain: {bcs['with_effect_chain']}, "
+          f"no handler: {bcs['without_handler']}")
+    print(f"  Max depth: {bcs['max_chain_depth']}, by step: {bcs.get('by_step_type', {})}")
+
     # Step 5: Gap 合并
     gap_path = out_dir / "gap_analysis.json"
     gap = {"stats": {"total_resolved": 0, "by_gap_type": {}, "merged_into_gt": False}, "resolved": []}
@@ -446,18 +448,15 @@ def main():
     if args.validate:
         print("\n[V] Running verification...")
         from extractors.ast_index import build_class_hierarchy, _resolve_android_base
-        from verification import (
-            manifest_verifier,
-            layout_verifier,
-            bytecode_verifier,
-        )
+        from verification import manifest_verifier, layout_verifier
+        from verification.bytecode_verifier import bytecode_verifier as run_bytecode_verifier
         from verification.report import build_verification_report, print_verification_report
 
         ast_hierarchy = build_class_hierarchy(project_root, dep_roots)
 
         m_result = manifest_verifier(project_root, ast_hierarchy, _resolve_android_base)
         l_result = layout_verifier(project_root, ast_hierarchy, _resolve_android_base)
-        b_result = bytecode_verifier(project_root, ast_hierarchy, _resolve_android_base)
+        b_result = run_bytecode_verifier(project_root, ast_hierarchy, _resolve_android_base)
 
         v_report = build_verification_report(m_result, l_result, b_result)
         (out_dir / "verification_report.json").write_text(
@@ -475,7 +474,12 @@ def main():
     specs_dir = out_dir / "specs"
     specs_dir.mkdir(exist_ok=True)
 
-    generate_all_specs(nav, gt, flat, dag, specs_dir)
+    generate_all_specs(nav, gt, flat, dag, specs_dir,
+                       layout_trees=xml_result.get("layout_trees"),
+                       fragments=frag_result.get("fragments"),
+                       dynamic_elements=dyn_result.get("dynamic_elements"),
+                       behavior_chains=bc_result.get("behavior_chains"),
+                       spec_version="2.0")
 
     generated = len(list(specs_dir.glob("*_spec.json")))
     print(f"  Generated {generated} specs in output/specs/")
@@ -486,6 +490,7 @@ def main():
                  "navigation_graph.json", "navigation_candidates.json",
                  "fragments.json",
                  "dynamic_ui.json",
+                 "behavior_chains.json",
                  "gap_analysis.json", "ui_dag.json",
                  "ui_paths.json", "ui_paths_legacy.json", "ui_paths_report.json",
                  "ui_effect_paths.json",

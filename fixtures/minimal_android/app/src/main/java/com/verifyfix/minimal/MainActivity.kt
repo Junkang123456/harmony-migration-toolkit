@@ -17,7 +17,8 @@ class MainActivity : FragmentActivity() {
             .replace(R.id.fragment_container, SettingsFragment())
             .commit()
 
-        findViewById<Button>(R.id.btn_settings).setOnClickListener {
+        val btnSettings = findViewById<Button>(R.id.btn_settings)
+        btnSettings.setOnClickListener {
             openSettings()
         }
 
