@@ -45,6 +45,14 @@ def detect_include_builds(project_root):
 
 
 def _print_spec_report(flat: list, dag: dict) -> None:
+    try:
+        _print_spec_report_impl(flat, dag)
+    except UnicodeEncodeError:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        _print_spec_report_impl(flat, dag)
+
+
+def _print_spec_report_impl(flat: list, dag: dict) -> None:
     print("\n" + "=" * 70)
     print("SPEC REPORT — UI Paths")
     print("=" * 70)
@@ -424,12 +432,7 @@ def main():
     )
     print(f"  App model: {am_counts}")
 
-    # ── Spec 报告 ──────────────────────────────────────────────────────────────
-    _print_spec_report(flat, dag)
-
-    # ── 阶段三：验证 ──
-
-    # Step 7a: 验证（仅在 --validate 时执行）
+    # ── 验证（仅在 --validate 时执行） ────────────────
     if args.validate:
         print("\n[V] Running verification...")
         from extractors.ast_index import build_class_hierarchy, _resolve_android_base
@@ -451,6 +454,9 @@ def main():
             json.dumps(v_report, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         print_verification_report(v_report)
+
+    # ── Spec 报告 ──────────────────────────────────────────────────────────────
+    _print_spec_report(flat, dag)
 
     # ── 阶段三：Spec 生成 ──
 
