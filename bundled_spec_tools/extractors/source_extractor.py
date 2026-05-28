@@ -593,6 +593,33 @@ def extract_data_driven_ui(source: str, file_path: str,
 
 
 # ══════════════════════════════════════════════════════
+# F. view_ref → XML id resolution via findViewById
+# ══════════════════════════════════════════════════════
+
+_FIND_VIEW_BY_ID_KT_RE = re.compile(
+    r'(?:val|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*'
+    r'(?:\w+\s*\.\s*)?findViewById\w*\s*(?:<[^>]*>\s*)?\(\s*R\.id\.(\w+)',
+)
+
+_FIND_VIEW_BY_ID_JAVA_RE = re.compile(
+    r'(\w+)\s*=\s*(?:\(\s*\w+\s*\)\s*)?'
+    r'(?:\w+\s*\.\s*)?'
+    r'findViewById\s*\(\s*R\.id\.(\w+)',
+)
+
+
+def _extract_viewref_id_map(source: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for m in _FIND_VIEW_BY_ID_KT_RE.finditer(source):
+        mapping[m.group(1)] = m.group(2)
+    for m in _FIND_VIEW_BY_ID_JAVA_RE.finditer(source):
+        var_name = m.group(1)
+        if var_name not in mapping:
+            mapping[var_name] = m.group(2)
+    return mapping
+
+
+# ══════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════
 
@@ -658,6 +685,7 @@ def run(project_root: str, file_prefix: str = "",
         "inflates":          [],
         "data_driven_ui":    [],
     }
+    view_ref_id_map: dict[str, dict[str, str]] = {}
 
     for src in src_files:
         try:
@@ -676,12 +704,16 @@ def run(project_root: str, file_prefix: str = "",
         findings["inflates"].extend(extract_inflates(source, rel))
         findings["data_driven_ui"].extend(extract_data_driven_ui(source, rel, constants))
 
+        ref_map = _extract_viewref_id_map(source)
+        if ref_map:
+            view_ref_id_map[rel] = ref_map
+
     enriched_count = _enrich_findings_with_symbols(findings, project_root, file_prefix=file_prefix)
     stats = {k: len(v) for k, v in findings.items()}
     stats["source_files_scanned"] = len(src_files)
     stats["findings_with_enclosing_symbol"] = enriched_count
 
-    return {"findings": findings, "stats": stats}
+    return {"findings": findings, "stats": stats, "view_ref_id_map": view_ref_id_map}
 
 
 if __name__ == "__main__":

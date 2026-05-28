@@ -155,6 +155,7 @@ def main():
         dep_symbols, dep_call_graph = function_graph_extractor.run(dep, file_prefix=dep_name)
         _merge_dict(src_result["findings"], dep_src["findings"])
         _merge_dict(src_result["stats"], dep_src["stats"])
+        src_result.setdefault("view_ref_id_map", {}).update(dep_src.get("view_ref_id_map", {}))
         symbol_payload["symbols"].extend(dep_symbols.get("symbols") or [])
         call_graph_payload["symbols"].extend(dep_call_graph.get("symbols") or [])
         call_graph_payload["calls"].extend(dep_call_graph.get("calls") or [])
@@ -190,7 +191,8 @@ def main():
 
     # Step 3: 合并 → ground truth
     print("\n[3/7] Building ground truth...")
-    gt = ground_truth_builder.build(xml_result, src_result)
+    gt = ground_truth_builder.build(xml_result, src_result,
+                                     view_ref_id_map=src_result.get("view_ref_id_map"))
     gt_path = out_dir / "ground_truth.json"
     gt_path.write_text(json.dumps(gt, indent=2, ensure_ascii=False), encoding="utf-8")
 

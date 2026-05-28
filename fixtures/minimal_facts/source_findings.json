@@ -44,5 +44,11 @@
     "data_driven_ui": 0,
     "source_files_scanned": 3,
     "findings_with_enclosing_symbol": 2
+  },
+  "view_ref_id_map": {
+    "app\\src\\main\\java\\com\\verifyfix\\minimal\\MainActivity.kt": {
+      "btnSettings": "btn_settings",
+      "container": "fragment_container"
+    }
   }
 }

@@ -30,18 +30,36 @@ def _clean_ref(ref: str) -> str:
     return ref.strip()
 
 
-def build(xml_result: dict, source_result: dict) -> dict:
-    # id → element 索引
+def _resolve_view_id(raw_ref: str, elements: dict,
+                     file_ref_map: dict | None = None) -> str:
+    if not raw_ref:
+        return ""
+    if raw_ref in elements:
+        return raw_ref
+    snake = _camel_to_snake(raw_ref)
+    if snake != raw_ref and snake in elements:
+        return snake
+    if file_ref_map:
+        mapped_id = file_ref_map.get(raw_ref, "")
+        if mapped_id and mapped_id in elements:
+            return mapped_id
+    return ""
+
+
+def build(xml_result: dict, source_result: dict, *,
+          view_ref_id_map: dict | None = None) -> dict:
     elements = {e["id"]: e for e in xml_result["elements"] if e.get("id")}
     findings = source_result["findings"]
+    file_maps = view_ref_id_map or {}
 
     # ── 1. event_registrations → 绑定到 XML 元素 ─────────────────
     unmatched = []
     for reg in findings.get("event_registrations", []):
         raw_ref = _clean_ref(reg.get("view_ref", ""))
-        view_id = _camel_to_snake(raw_ref) if raw_ref else ""
+        file_map = file_maps.get(reg.get("file", ""))
+        view_id = _resolve_view_id(raw_ref, elements, file_map)
 
-        if view_id and view_id in elements:
+        if view_id:
             elements[view_id].setdefault("behaviors", []).append({
                 "event":        reg["event_type"],
                 "method":       reg["method"],
@@ -50,7 +68,7 @@ def build(xml_result: dict, source_result: dict) -> dict:
                 "enclosing_fn": reg.get("enclosing_fn", ""),
             })
         else:
-            reg["_resolved_id_attempt"] = view_id
+            reg["_resolved_id_attempt"] = _camel_to_snake(raw_ref) if raw_ref else ""
             unmatched.append(reg)
 
     # ── 2. id_dispatchers → 绑定 menu / action items ──────────────
@@ -69,11 +87,11 @@ def build(xml_result: dict, source_result: dict) -> dict:
 
     # ── 3. visibility_controls → 标记条件可见 ────────────────────
     for vc in findings.get("visibility_controls", []):
-        # 可能是 view_ref 或 item_id
         raw = _clean_ref(vc.get("view_ref", "") or vc.get("item_id", ""))
-        vid = _camel_to_snake(raw)
+        vc_file_map = file_maps.get(vc.get("file", ""))
+        vid = _resolve_view_id(raw, elements, vc_file_map)
 
-        if vid and vid in elements:
+        if vid:
             elem = elements[vid]
             elem["conditional_visibility"] = True
             elem.setdefault("visibility_conditions", []).append({
