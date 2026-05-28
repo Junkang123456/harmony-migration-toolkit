@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from extractors.bytecode_navigation import find_class_dir
 from extractors.class_parser import parse_class
 
 _ANDROID_FRAGMENT_BASES_SHORT = {
@@ -18,24 +17,39 @@ _ANDROID_ACTIVITY_BASES_SHORT = {
 }
 
 
+def _class_dirs(project_root: str | Path) -> list[Path]:
+    root = Path(project_root)
+    dirs: list[Path] = []
+    build_roots = [root] + [e for e in root.iterdir() if e.is_dir() and not e.name.startswith(".")]
+    for br in build_roots:
+        for candidate in ("intermediates/javac", "tmp/kotlin-classes"):
+            parent = br / "build" / candidate
+            if parent.is_dir():
+                for variant in parent.iterdir():
+                    if variant.is_dir():
+                        dirs.append(variant)
+    return dirs
+
+
 def bytecode_hierarchy(project_root: str | Path) -> dict[str, str | None]:
     hierarchy: dict[str, str | None] = {}
-    class_dir = find_class_dir(str(project_root))
-    if not class_dir:
-        return hierarchy
-    root = Path(class_dir)
-    for cf in root.rglob("*.class"):
-        try:
-            cls = parse_class(cf)
-        except Exception:
-            continue
-        full_name: str = cls.get("class", "")
-        short = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
-        super_full: str = cls.get("super", "") or ""
-        if super_full and "." in super_full:
-            hierarchy[short] = super_full.rsplit(".", 1)[-1]
-        else:
-            hierarchy[short] = super_full or None
+    seen: set[str] = set()
+    for class_dir in _class_dirs(project_root):
+        for cf in class_dir.rglob("*.class"):
+            try:
+                cls = parse_class(cf)
+            except Exception:
+                continue
+            full_name: str = cls.get("class", "")
+            name = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
+            if name in seen:
+                continue
+            seen.add(name)
+            super_full: str = cls.get("super", "") or ""
+            if super_full and "." in super_full:
+                hierarchy[name] = super_full.rsplit(".", 1)[-1]
+            else:
+                hierarchy[name] = super_full or None
     return hierarchy
 
 
