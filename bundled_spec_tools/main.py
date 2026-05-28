@@ -83,6 +83,11 @@ def main():
         default=None,
         help="Output directory (default: bundled_spec_tools/output)",
     )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run verification after extraction and produce verification_report.json",
+    )
     args = parser.parse_args()
 
     project_root = args.android_project_root
@@ -422,6 +427,31 @@ def main():
     # ── Spec 报告 ──────────────────────────────────────────────────────────────
     _print_spec_report(flat, dag)
 
+    # ── 阶段三：验证 ──
+
+    # Step 7a: 验证（仅在 --validate 时执行）
+    if args.validate:
+        print("\n[V] Running verification...")
+        from extractors.ast_index import build_class_hierarchy, _resolve_android_base
+        from verification import (
+            manifest_verifier,
+            layout_verifier,
+            bytecode_verifier,
+        )
+        from verification.report import build_verification_report, print_verification_report
+
+        ast_hierarchy = build_class_hierarchy(project_root, dep_roots)
+
+        m_result = manifest_verifier(project_root, ast_hierarchy, _resolve_android_base)
+        l_result = layout_verifier(project_root, ast_hierarchy, _resolve_android_base)
+        b_result = bytecode_verifier(project_root, ast_hierarchy, _resolve_android_base)
+
+        v_report = build_verification_report(m_result, l_result, b_result)
+        (out_dir / "verification_report.json").write_text(
+            json.dumps(v_report, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print_verification_report(v_report)
+
     # ── 阶段三：Spec 生成 ──
 
     # Step 7: 为导航图中的每个屏幕生成 HarmonyOS 迁移 spec
@@ -443,7 +473,8 @@ def main():
                  "gap_analysis.json", "ui_dag.json",
                  "ui_paths.json", "ui_paths_legacy.json", "ui_paths_report.json",
                  "ui_effect_paths.json",
-                 "ui_paths_enumerated.json"]:
+                 "ui_paths_enumerated.json",
+                 "verification_report.json"]:
         exists = (out_dir / name).exists()
         marker = "OK" if exists else "MISSING"
         print(f"  [{marker}] output/{name}")
