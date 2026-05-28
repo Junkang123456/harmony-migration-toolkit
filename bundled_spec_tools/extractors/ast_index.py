@@ -295,22 +295,45 @@ _ANDROID_DIALOG_BASES = {
 }
 
 
-def _extract_base_class(source: bytes, class_node, language: str) -> str | None:
+def _extract_supertypes(source: bytes, class_node, language: str) -> tuple[str | None, list[str]]:
+    """Extract (base_class, interfaces) from a class declaration AST node."""
     if language == "java":
-        superclass = class_node.child_by_field_name("superclass")
-        if superclass is not None:
-            for i in range(superclass.named_child_count()):
-                child = superclass.named_child(i)
-                if child.kind() in {"type_identifier", "identifier"}:
-                    return _node_text(source, child)
+        return _extract_supertypes_java(source, class_node)
+    return _extract_supertypes_kotlin(source, class_node)
+
+
+def _extract_supertypes_java(source: bytes, class_node) -> tuple[str | None, list[str]]:
+    base_class = None
+    superclass = class_node.child_by_field_name("superclass")
+    if superclass is not None:
+        for i in range(superclass.named_child_count()):
+            child = superclass.named_child(i)
+            if child.kind() in {"type_identifier", "identifier"}:
+                base_class = _node_text(source, child)
+                break
+        if base_class is None:
             text = _node_text(source, superclass)
             for token in text.split():
                 token = token.strip()
                 if token and token not in ("extends", "implements") and token[0].isupper():
-                    return token.split("<")[0].split(".")[-1]
-        return None
-    # Kotlin: collect ALL delegation_specifiers, prefer constructor_invocation
-    # (class inheritance uses `()`, interface implementation doesn't)
+                    base_class = token.split("<")[0].split(".")[-1]
+                    break
+
+    interfaces: list[str] = []
+    iface_node = class_node.child_by_field_name("interfaces")
+    if iface_node is not None:
+        for i in range(iface_node.named_child_count()):
+            child = iface_node.named_child(i)
+            if child.kind() in {"type_identifier", "identifier", "type_list"}:
+                text = _node_text(source, child)
+                name = text.split("<")[0].split(".")[-1].strip()
+                if name:
+                    interfaces.append(name)
+    return base_class, interfaces
+
+
+def _extract_supertypes_kotlin(source: bytes, class_node) -> tuple[str | None, list[str]]:
+    # Kotlin: constructor_invocation = class inheritance, user_type = interface
     ctor_candidates: list[str] = []
     type_candidates: list[str] = []
     for child in _walk(class_node):
@@ -328,21 +351,27 @@ def _extract_base_class(source: bytes, class_node, language: str) -> str | None:
                 name = text.split("<")[0].split(".")[-1].strip()
                 if name:
                     type_candidates.append(name)
+
     if ctor_candidates:
-        return ctor_candidates[0]
-    if type_candidates:
-        return type_candidates[0]
-    # Fallback: super_type_list (older tree-sitter grammars)
-    for child in _walk(class_node):
-        if child.kind() == "super_type_list":
-            for i in range(child.named_child_count()):
-                sub = child.named_child(i)
-                text = _node_text(source, sub)
-                name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
-                if name:
-                    return name
-            break
-    return None
+        base_class = ctor_candidates[0]
+        interfaces = type_candidates + ctor_candidates[1:]
+    elif type_candidates:
+        base_class = type_candidates[0]
+        interfaces = type_candidates[1:]
+    else:
+        # Fallback: super_type_list (older tree-sitter grammars)
+        for child in _walk(class_node):
+            if child.kind() == "super_type_list":
+                for i in range(child.named_child_count()):
+                    sub = child.named_child(i)
+                    text = _node_text(source, sub)
+                    name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
+                    if name:
+                        return name, []
+                break
+        return None, []
+
+    return base_class, interfaces
 
 
 def lookup_class(hierarchy: dict[str, ClassInfo], short_name: str) -> ClassInfo | None:
@@ -431,11 +460,12 @@ def build_class_hierarchy(
                 if not name:
                     continue
                 fqn = f"{package}.{name}" if package else name
+                base_class, interfaces = _extract_supertypes(source, node, language)
                 hierarchy[fqn] = ClassInfo(
                     name=name,
                     package=package,
-                    base_class=_extract_base_class(source, node, language),
-                    interfaces=[],
+                    base_class=base_class,
+                    interfaces=interfaces,
                     source_file=rel,
                     language=language,
                     line=_line(node),
