@@ -111,6 +111,30 @@ def test_pipeline_minimal_fixture_schema():
     assert elem["host_class"] == "MainActivity"
     assert elem["properties"]["text"] == "Loading..."
 
+    # P2: behavior_chains
+    bc = json.loads((inter / "0_android_facts" / "behavior_chains.json").read_text(encoding="utf-8"))
+    assert isinstance(bc["behavior_chains"], list)
+    assert bc["stats"]["total_bindings"] >= 1
+    assert bc["stats"]["with_effect_chain"] >= 1
+    chain = bc["behavior_chains"][0]
+    assert chain["event_type"] == "click"
+    assert chain["view_ref"] == "btnSettings"
+    assert chain["element_id"] == "btn_settings"
+    assert len(chain["effect_chain"]) >= 1
+    assert chain["chain_depth"] >= 1
+
+    # P2: v2 spec format
+    spec_files = list((inter / "7_specs").glob("activity_main_spec.json"))
+    if spec_files:
+        spec = json.loads(spec_files[0].read_text(encoding="utf-8"))
+        assert spec.get("spec_version") == "2.0"
+        assert "L0_structure" in spec
+        assert "L1_behavior" in spec
+        assert spec["L0_structure"]["ui_tree"] is not None
+        assert isinstance(spec["L0_structure"]["fragments"], list)
+        assert isinstance(spec["L0_structure"]["dynamic_elements"], list)
+        assert isinstance(spec["L1_behavior"]["event_bindings"], list)
+
 
 def test_stage0_bundled_scanner_uses_isolated_output(tmp_path: Path):
     out = tmp_path / "stage0"
@@ -136,6 +160,7 @@ def test_stage0_bundled_scanner_uses_isolated_output(tmp_path: Path):
         assert (facts / "navigation_graph.json").is_file()
         assert (facts / "function_symbols.json").is_file()
         assert (facts / "call_graph.json").is_file()
+        assert (facts / "behavior_chains.json").is_file()
         assert (facts / "app_model" / "index.json").is_file()
         assert (facts / "manifest.json").is_file()
         assert not (facts / "app_model" / "features" / stale.name).exists()
