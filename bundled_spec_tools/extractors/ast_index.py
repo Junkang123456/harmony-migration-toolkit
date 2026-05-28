@@ -367,11 +367,7 @@ def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
 
     info = hierarchy.get(kind) or lookup_class(hierarchy, kind)
     if info is None or info.base_class is None:
-        if kind.endswith("Fragment"):
-            return "fragment"
-        if kind.endswith("Activity"):
-            return "activity"
-        return "other"
+        return _guess_type_from_name(kind)
 
     base = info.base_class
     if base in _ANDROID_FRAGMENT_BASES:
@@ -381,6 +377,25 @@ def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
     if base in _ANDROID_DIALOG_BASES:
         return "dialog"
     return _resolve_android_base(base, hierarchy, visited)
+
+
+def _guess_type_from_name(name: str) -> str:
+    """Name-only fallback when the class is not in the hierarchy.
+
+    Only applies to classes whose base class is unknown (e.g. from a
+    library not in the scan). Uses conservative rules to avoid false
+    positives like 'ActivityFragment' being classified as activity.
+    """
+    # Check the LAST meaningful suffix — "ActivityFragment" → fragment, not activity
+    if name.endswith("DialogFragment") or name.endswith("BottomSheetDialogFragment"):
+        return "fragment"
+    if name.endswith("Fragment"):
+        return "fragment"
+    if name.endswith("Dialog") or name.endswith("BottomSheet"):
+        return "dialog"
+    if name.endswith("Activity"):
+        return "activity"
+    return "other"
 
 
 def build_class_hierarchy(
