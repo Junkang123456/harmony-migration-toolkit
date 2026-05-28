@@ -374,4 +374,10 @@ def find_class_dir(project_root: str) -> str | None:
             for variant in c.iterdir():
                 if variant.is_dir():
                     return str(variant)
+    # fallback: search for any directory containing .class files under build/
+    build_dirs = list(root.rglob("build"))
+    for bd in build_dirs:
+        class_files = list(bd.rglob("*.class"))
+        if class_files:
+            return str(bd)
     return None

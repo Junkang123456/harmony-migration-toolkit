@@ -60,29 +60,23 @@ def build_verification_report(
             f"{l_only} layout <fragment> refs missing from AST hierarchy"
         )
 
-    b_frag_diff = bytecode.get("ast_vs_bytecode_fragment_diff", {})
-    b_act_diff = bytecode.get("ast_vs_bytecode_activity_diff", {})
+    if bytecode.get("bytecode_available"):
+        b_frag_diff = bytecode.get("ast_vs_bytecode_fragment_diff", {})
+        b_act_diff = bytecode.get("ast_vs_bytecode_activity_diff", {})
 
-    frag_bc_only = len(b_frag_diff.get("bytecode_only", []))
-    frag_ast_only = len(b_frag_diff.get("ast_only", []))
-    act_bc_only = len(b_act_diff.get("bytecode_only", []))
-    act_ast_only = len(b_act_diff.get("ast_only", []))
+        frag_bc_only = len(b_frag_diff.get("bytecode_only", []))
+        frag_ast_only = len(b_frag_diff.get("ast_only", []))
+        act_bc_only = len(b_act_diff.get("bytecode_only", []))
+        act_ast_only = len(b_act_diff.get("ast_only", []))
 
-    if frag_bc_only:
-        issues.append(
-            f"{frag_bc_only} fragments in bytecode but not in AST"
-        )
-    if frag_ast_only:
-        issues.append(
-            f"{frag_ast_only} fragments in AST but not in bytecode"
-        )
-    if act_bc_only:
-        issues.append(
-            f"{act_bc_only} activities in bytecode but not in AST"
-        )
-    if act_ast_only:
-        issues.append(
-            f"{act_ast_only} activities in AST but not in bytecode"
+        if frag_bc_only:
+            issues.append(f"{frag_bc_only} fragments in bytecode but not in AST")
+        if frag_ast_only:
+            issues.append(f"{frag_ast_only} fragments in AST but not in bytecode")
+        if act_bc_only:
+            issues.append(f"{act_bc_only} activities in bytecode but not in AST")
+        if act_ast_only:
+            issues.append(f"{act_ast_only} activities in AST but not in bytecode")
         )
 
     report["summary"] = {
@@ -125,6 +119,9 @@ def print_verification_report(report: dict) -> None:
         elif "bytecode_class_count" in section_data:
             b = section_data
             print(f"    Bytecode classes: {b['bytecode_class_count']}")
+            if not b.get("bytecode_available"):
+                print("      ⚠  No bytecode data — build project first or check find_class_dir()")
+                continue
             print(f"      Fragments: {b['bytecode_fragment_count']}  "
                   f"Activities: {b['bytecode_activity_count']}")
             for diff_key, diff_label in [

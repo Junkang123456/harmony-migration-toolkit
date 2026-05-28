@@ -60,12 +60,9 @@ def _resolve_bytecode_base(
     visited.add(name)
 
     super_name = bc_hierarchy.get(name)
+    # class not found in bytecode at all — unknown, not a guess
     if super_name is None:
-        if name.endswith("Fragment"):
-            return "fragment"
-        if name.endswith("Activity"):
-            return "activity"
-        return "other"
+        return "unknown"
 
     if super_name in _ANDROID_FRAGMENT_BASES:
         return "fragment"
@@ -80,15 +77,26 @@ def bytecode_verifier(
     resolve_android_base,
 ) -> dict:
     bc_hierarchy = bytecode_hierarchy(project_root)
-    result = {
+
+    result: dict = {
+        "bytecode_available": bool(bc_hierarchy),
         "bytecode_class_count": len(bc_hierarchy),
-        "bytecode_fragment_count": 0,
-        "bytecode_activity_count": 0,
-        "bytecode_fragments": [],
-        "bytecode_activities": [],
-        "ast_vs_bytecode_fragment_diff": [],
-        "ast_vs_bytecode_activity_diff": [],
     }
+
+    if not bc_hierarchy:
+        result["bytecode_fragment_count"] = 0
+        result["bytecode_activity_count"] = 0
+        result["bytecode_fragments"] = []
+        result["bytecode_activities"] = []
+        result["ast_vs_bytecode_fragment_diff"] = {
+            "note": "no bytecode data — build project first or check find_class_dir()",
+            "ast_only": [], "bytecode_only": [], "matched": [],
+        }
+        result["ast_vs_bytecode_activity_diff"] = {
+            "note": "no bytecode data — build project first or check find_class_dir()",
+            "ast_only": [], "bytecode_only": [], "matched": [],
+        }
+        return result
 
     bc_fragments: set[str] = set()
     bc_activities: set[str] = set()
@@ -96,13 +104,13 @@ def bytecode_verifier(
         kind = _resolve_bytecode_base(name, bc_hierarchy)
         if kind == "fragment":
             bc_fragments.add(name)
-            result["bytecode_fragments"].append(name)
         elif kind == "activity":
             bc_activities.add(name)
-            result["bytecode_activities"].append(name)
 
     result["bytecode_fragment_count"] = len(bc_fragments)
     result["bytecode_activity_count"] = len(bc_activities)
+    result["bytecode_fragments"] = sorted(bc_fragments)
+    result["bytecode_activities"] = sorted(bc_activities)
 
     ast_fragments = {
         name for name, info in ast_hierarchy.items()
