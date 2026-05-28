@@ -620,28 +620,28 @@ def _extract_viewref_id_map(source: str) -> dict[str, str]:
 
 
 # ══════════════════════════════════════════════════════
-# G. AST-based receiver type annotation
+# G. AST post-processing: receiver types + if/else id_dispatch
 # ══════════════════════════════════════════════════════
 
-def _annotate_receiver_types(findings: dict, project_root: str,
-                             file_path_map: dict[str, Path]):
-    """Post-process event_registrations: add receiver_type and is_view via AST."""
+def _ast_postprocess(findings: dict, project_root: str,
+                     file_path_map: dict[str, Path]):
+    """Single AST pass per file: annotate receiver types + detect if/else R.id dispatchers."""
     if ast_index is None or ast_index.get_parser is None:
         return
 
     hierarchy = ast_index.build_class_hierarchy(project_root)
 
-    by_file: dict[str, list[dict]] = {}
+    existing_dispatch = set()
+    for d in findings.get("id_dispatchers", []):
+        existing_dispatch.add((d.get("item_id", ""), d.get("file", "")))
+
+    regs_by_file: dict[str, list[dict]] = {}
     for reg in findings.get("event_registrations", []):
-        by_file.setdefault(reg["file"], []).append(reg)
+        regs_by_file.setdefault(reg["file"], []).append(reg)
 
-    for rel_path, regs in by_file.items():
-        actual_path = file_path_map.get(rel_path)
-        if not actual_path or not actual_path.exists():
-            continue
-
-        lang = "kotlin" if actual_path.suffix == ".kt" else (
-            "java" if actual_path.suffix == ".java" else "")
+    for rel_path, actual_path in file_path_map.items():
+        lang = ("kotlin" if actual_path.suffix == ".kt"
+                else "java" if actual_path.suffix == ".java" else "")
         if not lang:
             continue
 
@@ -652,9 +652,12 @@ def _annotate_receiver_types(findings: dict, project_root: str,
         except Exception:
             continue
 
-        var_types = ast_index.extract_variable_types(source, tree.root_node(), lang)
+        root_node = tree.root_node()
+        lines = source.decode("utf-8", errors="ignore").splitlines()
 
-        for reg in regs:
+        # --- receiver type annotation ---
+        var_types = ast_index.extract_variable_types(source, root_node, lang)
+        for reg in regs_by_file.get(rel_path, []):
             view_ref = reg.get("view_ref", "")
             var_type = var_types.get(view_ref, "")
             reg["receiver_type"] = var_type
@@ -662,6 +665,35 @@ def _annotate_receiver_types(findings: dict, project_root: str,
                 reg["is_view"] = ast_index.is_view_type(var_type, hierarchy)
             else:
                 reg["is_view"] = None
+
+        # --- if/else-if R.id.xxx dispatch detection ---
+        for node in ast_index._walk(root_node):
+            if node.kind() not in ("if_expression", "if_statement"):
+                continue
+            condition = node.child_by_field_name("condition")
+            if condition is None:
+                continue
+            cond_text = ast_index._node_text(source, condition)
+            for m in re.finditer(r"R\.id\.(\w+)", cond_text):
+                item_id = m.group(1)
+                if (item_id, rel_path) in existing_dispatch:
+                    continue
+                existing_dispatch.add((item_id, rel_path))
+                line_idx = node.start_position().row + 1
+                enclosing = _enclosing_fn(lines, line_idx - 1)
+                consequence = node.child_by_field_name("consequence")
+                handler = ""
+                if consequence:
+                    handler = (ast_index._node_text(source, consequence)
+                               [:120].strip().replace("\n", " "))
+                findings["id_dispatchers"].append({
+                    "kind":        "id_dispatch",
+                    "file":        rel_path,
+                    "line":        line_idx,
+                    "item_id":     item_id,
+                    "handler":     handler,
+                    "enclosing_fn": enclosing,
+                })
 
 
 # ══════════════════════════════════════════════════════
@@ -756,8 +788,7 @@ def run(project_root: str, file_prefix: str = "",
         if ref_map:
             view_ref_id_map[rel] = ref_map
 
-    if scan_events:
-        _annotate_receiver_types(findings, project_root, file_path_map)
+    _ast_postprocess(findings, project_root, file_path_map)
 
     enriched_count = _enrich_findings_with_symbols(findings, project_root, file_prefix=file_prefix)
     stats = {k: len(v) for k, v in findings.items()}
