@@ -273,6 +273,7 @@ class ClassInfo:
     source_file: str
     language: str
     line: int = 0
+    is_interface: bool = False
 
     @property
     def fqn(self) -> str:
@@ -395,6 +396,8 @@ def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
     visited.add(kind)
 
     info = hierarchy.get(kind) or lookup_class(hierarchy, kind)
+    if info is not None and info.is_interface:
+        return "interface"
     if info is None or info.base_class is None:
         return _guess_type_from_name(kind)
 
@@ -469,6 +472,7 @@ def build_class_hierarchy(
                     source_file=rel,
                     language=language,
                     line=_line(node),
+                    is_interface=node.kind() == "interface_declaration",
                 )
     return hierarchy
 
