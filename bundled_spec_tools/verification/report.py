@@ -77,7 +77,6 @@ def build_verification_report(
             issues.append(f"{act_bc_only} activities in bytecode but not in AST")
         if act_ast_only:
             issues.append(f"{act_ast_only} activities in AST but not in bytecode")
-        )
 
     report["summary"] = {
         "total_checks": total,
