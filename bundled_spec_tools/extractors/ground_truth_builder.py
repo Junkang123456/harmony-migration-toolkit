@@ -145,11 +145,14 @@ def build(xml_result: dict, source_result: dict, *,
     conditional    = [e for e in all_elems if e.get("conditional_visibility")]
     pure_dynamic   = [g for g in gap_elements if not g["in_static_xml"]]
     data_driven    = [g for g in gap_elements if g.get("source") == "data_driven_ui"]
+    interactive_or_bound = [e for e in all_elems
+                           if e.get("is_interactive") or e.get("behaviors")]
 
     stats = {
         "xml_elements_total":         len(all_elems),
         "xml_interactive":            sum(1 for e in all_elems if e.get("is_interactive")),
         "xml_with_behavior_bound":    len(with_behaviors),
+        "xml_interactive_or_bound":   len(interactive_or_bound),
         "xml_conditional_visibility": len(conditional),
         "dynamic_gap_total":          len(gap_elements),
         "dynamic_gap_pure_new":       len(pure_dynamic),

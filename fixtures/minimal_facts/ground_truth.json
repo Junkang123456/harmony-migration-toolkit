@@ -92,6 +92,7 @@
     "xml_elements_total": 5,
     "xml_interactive": 1,
     "xml_with_behavior_bound": 1,
+    "xml_interactive_or_bound": 1,
     "xml_conditional_visibility": 0,
     "dynamic_gap_total": 1,
     "dynamic_gap_pure_new": 0,

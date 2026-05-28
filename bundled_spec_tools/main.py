@@ -199,7 +199,8 @@ def main():
     s = gt["coverage_stats"]
     print(f"\nGround truth saved to {gt_path}")
     print(f"  XML elements:            {s['xml_elements_total']}")
-    print(f"  Interactive:             {s['xml_interactive']}")
+    print(f"  Interactive (XML attr):  {s['xml_interactive']}")
+    print(f"  Interactive or bound:    {s['xml_interactive_or_bound']}")
     print(f"  Behavior bound:          {s['xml_with_behavior_bound']}")
     print(f"  Conditional visibility:  {s['xml_conditional_visibility']}")
     print(f"  Dynamic gap (total):     {s['dynamic_gap_total']}")
@@ -208,7 +209,7 @@ def main():
     print(f"  Non-UI bindings:         {s['non_ui_bindings']}")
     print(f"  Unmatched:               {s['unmatched']}")
 
-    total = s["xml_interactive"] + s["dynamic_gap_pure_new"]
+    total = s["xml_interactive_or_bound"] + s["dynamic_gap_pure_new"]
     bound = s["xml_with_behavior_bound"]
     if total > 0:
         pct = bound / total * 100
