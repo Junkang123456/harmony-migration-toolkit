@@ -96,9 +96,19 @@ def main():
         action="store_true",
         help="Run verification after extraction and produce verification_report.json",
     )
+    parser.add_argument(
+        "--module",
+        type=str,
+        default=None,
+        help="Restrict scanning to a specific module subdirectory (e.g. app, app-wearos)",
+    )
     args = parser.parse_args()
 
     project_root = args.android_project_root
+    if args.module:
+        project_root = str(Path(project_root) / args.module)
+        print(f"Module-restricted mode: {args.module}")
+
     out_dir = (args.out or (Path(__file__).parent / "output")).resolve()
     if out_dir.exists():
         shutil.rmtree(out_dir)

@@ -17,24 +17,28 @@ _ANDROID_ACTIVITY_BASES_SHORT = {
 }
 
 
-def _class_dirs(project_root: str | Path) -> list[Path]:
+def _class_dirs(project_root: str | Path) -> list[tuple[Path, str]]:
     root = Path(project_root)
-    dirs: list[Path] = []
-    build_roots = [root] + [e for e in root.iterdir() if e.is_dir() and not e.name.startswith(".")]
-    for br in build_roots:
+    items: list[tuple[Path, str]] = []
+    build_roots: list[tuple[Path, str]] = [(root, root.name)]
+    for e in root.iterdir():
+        if e.is_dir() and not e.name.startswith("."):
+            build_roots.append((e, e.name))
+    for br, module_name in build_roots:
         for candidate in ("intermediates/javac", "tmp/kotlin-classes"):
             parent = br / "build" / candidate
             if parent.is_dir():
                 for variant in parent.iterdir():
                     if variant.is_dir():
-                        dirs.append(variant)
-    return dirs
+                        items.append((variant, module_name))
+    return items
 
 
-def bytecode_hierarchy(project_root: str | Path) -> dict[str, str | None]:
+def bytecode_hierarchy(project_root: str | Path) -> tuple[dict[str, str | None], dict[str, str]]:
     hierarchy: dict[str, str | None] = {}
+    class_module: dict[str, str] = {}
     seen: set[str] = set()
-    for class_dir in _class_dirs(project_root):
+    for class_dir, module_name in _class_dirs(project_root):
         for cf in class_dir.rglob("*.class"):
             try:
                 cls = parse_class(cf)
@@ -45,12 +49,13 @@ def bytecode_hierarchy(project_root: str | Path) -> dict[str, str | None]:
             if name in seen:
                 continue
             seen.add(name)
+            class_module[name] = module_name
             super_full: str = cls.get("super", "") or ""
             if super_full and "." in super_full:
                 hierarchy[name] = super_full.rsplit(".", 1)[-1]
             else:
                 hierarchy[name] = super_full or None
-    return hierarchy
+    return hierarchy, class_module
 
 
 def _resolve_bytecode_base(
@@ -81,11 +86,12 @@ def bytecode_verifier(
     ast_hierarchy: dict,
     resolve_android_base,
 ) -> dict:
-    bc_hierarchy = bytecode_hierarchy(project_root)
+    bc_hierarchy, class_module = bytecode_hierarchy(project_root)
 
     result: dict = {
         "bytecode_available": bool(bc_hierarchy),
         "bytecode_class_count": len(bc_hierarchy),
+        "modules_scanned": sorted(set(class_module.values())),
     }
 
     if not bc_hierarchy:
@@ -126,15 +132,48 @@ def bytecode_verifier(
         if resolve_android_base(fqn, ast_hierarchy) == "activity"
     }
 
-    result["ast_vs_bytecode_fragment_diff"] = {
-        "ast_only": sorted(ast_fragments - bc_fragments),
-        "bytecode_only": sorted(bc_fragments - ast_fragments),
-        "matched": sorted(ast_fragments & bc_fragments),
-    }
-    result["ast_vs_bytecode_activity_diff"] = {
-        "ast_only": sorted(ast_activities - bc_activities),
-        "bytecode_only": sorted(bc_activities - ast_activities),
-        "matched": sorted(ast_activities & bc_activities),
-    }
+    def _diff_with_diagnostics(ast_set, bc_set, label):
+        ast_only = sorted(ast_set - bc_set)
+        bc_only = sorted(bc_set - ast_set)
+        matched = sorted(ast_set & bc_set)
+        ast_only_details = []
+        for name in ast_only:
+            bc_type = _resolve_bytecode_base(name, bc_hierarchy) if name in bc_hierarchy else "not_in_hierarchy"
+            mod = class_module.get(name, "N/A")
+            ast_only_details.append({
+                "class": name,
+                "in_bytecode_hierarchy": name in bc_hierarchy,
+                "bytecode_type": bc_type,
+                "module": mod,
+            })
+        bc_only_details = []
+        for name in bc_only:
+            ast_type = resolve_android_base(name, ast_hierarchy) if name in ast_hierarchy else "not_in_ast"
+            mod = class_module.get(name, "N/A")
+            bc_only_details.append({
+                "class": name,
+                "in_ast_hierarchy": name in ast_hierarchy,
+                "ast_type": ast_type,
+                "module": mod,
+            })
+        matched_details = []
+        for name in matched:
+            mod = class_module.get(name, "N/A")
+            matched_details.append({"class": name, "module": mod})
+        return {
+            "ast_only": ast_only,
+            "ast_only_details": ast_only_details,
+            "bytecode_only": bc_only,
+            "bytecode_only_details": bc_only_details,
+            "matched": matched,
+            "matched_details": matched_details,
+        }
+
+    result["ast_vs_bytecode_fragment_diff"] = _diff_with_diagnostics(
+        ast_fragments, bc_fragments, "fragment"
+    )
+    result["ast_vs_bytecode_activity_diff"] = _diff_with_diagnostics(
+        ast_activities, bc_activities, "activity"
+    )
 
     return result
