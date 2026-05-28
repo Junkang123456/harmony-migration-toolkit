@@ -11,7 +11,7 @@
       "content_desc": "",
       "on_click_attr": "",
       "visibility": "visible",
-      "is_interactive": true
+      "is_interactive": false
     },
     {
       "source": "static_xml_layout",
@@ -24,7 +24,7 @@
       "content_desc": "",
       "on_click_attr": "",
       "visibility": "visible",
-      "is_interactive": true
+      "is_interactive": false
     },
     {
       "source": "static_xml_layout",
@@ -59,7 +59,7 @@
       "content_desc": "",
       "on_click_attr": "",
       "visibility": "visible",
-      "is_interactive": true
+      "is_interactive": false
     },
     {
       "source": "static_xml_layout",
@@ -72,7 +72,7 @@
       "content_desc": "",
       "on_click_attr": "",
       "visibility": "visible",
-      "is_interactive": true
+      "is_interactive": false
     }
   ],
   "dynamic_gap": [
@@ -86,15 +86,17 @@
       "in_static_xml": true
     }
   ],
+  "non_ui_bindings": [],
   "unmatched": [],
   "coverage_stats": {
     "xml_elements_total": 5,
-    "xml_interactive": 5,
+    "xml_interactive": 1,
     "xml_with_behavior_bound": 1,
     "xml_conditional_visibility": 0,
     "dynamic_gap_total": 1,
     "dynamic_gap_pure_new": 0,
     "data_driven_ui": 0,
+    "non_ui_bindings": 0,
     "unmatched": 0
   }
 }

@@ -204,6 +204,8 @@ def main():
     print(f"  Conditional visibility:  {s['xml_conditional_visibility']}")
     print(f"  Dynamic gap (total):     {s['dynamic_gap_total']}")
     print(f"  Dynamic gap (new):       {s['dynamic_gap_pure_new']}")
+    print(f"  Data-driven UI:          {s['data_driven_ui']}")
+    print(f"  Non-UI bindings:         {s['non_ui_bindings']}")
     print(f"  Unmatched:               {s['unmatched']}")
 
     total = s["xml_interactive"] + s["dynamic_gap_pure_new"]

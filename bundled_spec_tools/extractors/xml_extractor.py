@@ -13,24 +13,29 @@ from extractors import android_project
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 APP_NS     = "http://schemas.android.com/apk/res-auto"
 
-# 明确可交互的 tag
-INTERACTIVE_TAGS = {
+# 固有可交互 tag — 无需额外属性即可交互
+INHERENT_INTERACTIVE_TAGS = {
     "Button", "ImageButton", "FloatingActionButton",
     "CheckBox", "RadioButton", "Switch", "ToggleButton",
     "EditText", "AutoCompleteTextView", "MultiAutoCompleteTextView",
     "Spinner", "SeekBar", "RatingBar",
-    "TextView",           # 可能带 clickable / onClick
-    "ImageView",          # 可能带 clickable
-    "LinearLayout", "FrameLayout", "RelativeLayout",  # container 也可能 clickable
-    "RecyclerView", "ViewPager2",
     "BottomNavigationView", "NavigationView",
-    "TabLayout",
+    "TabLayout", "SearchView",
     "com.google.android.material.floatingactionbutton.FloatingActionButton",
-    "com.google.android.material.appbar.MaterialToolbar",
     "com.google.android.material.chip.Chip",
+}
+
+# 条件交互 tag — 只有显式声明 clickable/onClick 时才算交互
+CONDITIONAL_INTERACTIVE_TAGS = {
+    "TextView", "ImageView",
+    "LinearLayout", "FrameLayout", "RelativeLayout", "ConstraintLayout",
+    "RecyclerView", "ViewPager2",
+    "com.google.android.material.appbar.MaterialToolbar",
     "com.google.android.material.chip.ChipGroup",
     "androidx.cardview.widget.CardView",
 }
+
+INTERACTIVE_TAGS = INHERENT_INTERACTIVE_TAGS | CONDITIONAL_INTERACTIVE_TAGS
 
 def _attr(elem, local_name, ns=ANDROID_NS):
     return elem.get(f"{{{ns}}}{local_name}", "")
@@ -71,10 +76,15 @@ def extract_layout(xml_path: Path, source_prefix: str = "static_xml_layout",
         content_desc  = _attr(elem, "contentDescription")
 
         is_interactive = (
-            short in INTERACTIVE_TAGS
+            short in INHERENT_INTERACTIVE_TAGS
             or on_click_attr
             or clickable == "true"
             or checkable == "true"
+            or (short in CONDITIONAL_INTERACTIVE_TAGS and (
+                clickable == "true"
+                or on_click_attr
+                or _attr(elem, "longClickable") == "true"
+            ))
         )
 
         if not (is_interactive or view_id):
@@ -144,10 +154,15 @@ def _build_tree_node(elem, include_resolver=None) -> dict:
     content_desc = _attr(elem, "contentDescription")
 
     is_interactive = (
-        short in INTERACTIVE_TAGS
+        short in INHERENT_INTERACTIVE_TAGS
         or bool(on_click_attr)
         or clickable == "true"
         or checkable == "true"
+        or (short in CONDITIONAL_INTERACTIVE_TAGS and (
+            clickable == "true"
+            or bool(on_click_attr)
+            or _attr(elem, "longClickable") == "true"
+        ))
     )
 
     children = []

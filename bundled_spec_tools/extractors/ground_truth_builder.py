@@ -54,6 +54,7 @@ def build(xml_result: dict, source_result: dict, *,
 
     # ── 1. event_registrations → 绑定到 XML 元素 ─────────────────
     unmatched = []
+    non_ui_bindings = []
     for reg in findings.get("event_registrations", []):
         raw_ref = _clean_ref(reg.get("view_ref", ""))
         file_map = file_maps.get(reg.get("file", ""))
@@ -67,6 +68,8 @@ def build(xml_result: dict, source_result: dict, *,
                 "line":         reg["line"],
                 "enclosing_fn": reg.get("enclosing_fn", ""),
             })
+        elif reg.get("is_view") is False:
+            non_ui_bindings.append(reg)
         else:
             reg["_resolved_id_attempt"] = _camel_to_snake(raw_ref) if raw_ref else ""
             unmatched.append(reg)
@@ -151,12 +154,14 @@ def build(xml_result: dict, source_result: dict, *,
         "dynamic_gap_total":          len(gap_elements),
         "dynamic_gap_pure_new":       len(pure_dynamic),
         "data_driven_ui":             len(data_driven),
+        "non_ui_bindings":            len(non_ui_bindings),
         "unmatched":                  len(unmatched),
     }
 
     return {
         "static_elements": all_elems,
         "dynamic_gap":     gap_elements,
+        "non_ui_bindings": non_ui_bindings,
         "unmatched":       unmatched,
         "coverage_stats":  stats,
     }
