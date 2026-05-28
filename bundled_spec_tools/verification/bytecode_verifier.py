@@ -5,25 +5,16 @@ from pathlib import Path
 from extractors.bytecode_navigation import find_class_dir
 from extractors.class_parser import parse_class
 
-_ANDROID_FRAGMENT_BASES = {
-    "androidx.fragment.app.Fragment", "android.app.Fragment",
-    "androidx.fragment.app.DialogFragment", "android.app.DialogFragment",
-    "androidx.fragment.app.BottomSheetDialogFragment",
-    "androidx.preference.PreferenceFragmentCompat",
-    "android.app.ListFragment",
-    "com.google.android.gms.maps.MapFragment",
-    "com.google.android.gms.maps.SupportMapFragment",
-    "android.preference.PreferenceFragment",
-    "androidx.appcompat.app.AppCompatDialogFragment",
+_ANDROID_FRAGMENT_BASES_SHORT = {
+    "Fragment", "DialogFragment", "BottomSheetDialogFragment",
+    "PreferenceFragmentCompat", "ListFragment",
+    "MapFragment", "SupportMapFragment",
+    "AppCompatDialogFragment",
 }
 
-_ANDROID_ACTIVITY_BASES = {
-    "android.app.Activity",
-    "androidx.appcompat.app.AppCompatActivity",
-    "androidx.fragment.app.FragmentActivity",
-    "androidx.activity.ComponentActivity",
-    "android.app.ListActivity",
-    "android.preference.PreferenceActivity",
+_ANDROID_ACTIVITY_BASES_SHORT = {
+    "Activity", "AppCompatActivity", "FragmentActivity",
+    "ComponentActivity", "ListActivity", "PreferenceActivity",
 }
 
 
@@ -59,16 +50,16 @@ def _resolve_bytecode_base(
         return "other"
     visited.add(name)
 
-    super_name = bc_hierarchy.get(name)
+    super_short = bc_hierarchy.get(name)
     # class not found in bytecode at all — unknown, not a guess
-    if super_name is None:
+    if super_short is None:
         return "unknown"
 
-    if super_name in _ANDROID_FRAGMENT_BASES:
+    if super_short in _ANDROID_FRAGMENT_BASES_SHORT:
         return "fragment"
-    if super_name in _ANDROID_ACTIVITY_BASES:
+    if super_short in _ANDROID_ACTIVITY_BASES_SHORT:
         return "activity"
-    return _resolve_bytecode_base(super_name, bc_hierarchy, visited)
+    return _resolve_bytecode_base(super_short, bc_hierarchy, visited)
 
 
 def bytecode_verifier(
