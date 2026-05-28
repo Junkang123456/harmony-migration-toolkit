@@ -924,11 +924,11 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
         all_class_names.add(e["to"])
     # Add AST-detected Activity classes as explicit nodes
     if _HIERARCHY and _resolve_android_base is not None:
-        for name, info in _HIERARCHY.items():
-            if _resolve_android_base(name, _HIERARCHY) in ("activity", "dialog"):
-                all_class_names.add(name)
-                if name not in _INFERRED_LAYOUTS and info.base_class:
-                    _INFERRED_LAYOUTS[name] = _find_layout_for_class(name)
+        for fqn, info in _HIERARCHY.items():
+            if _resolve_android_base(fqn, _HIERARCHY) in ("activity", "dialog"):
+                all_class_names.add(info.name)
+                if info.name not in _INFERRED_LAYOUTS and info.base_class:
+                    _INFERRED_LAYOUTS[info.name] = _find_layout_for_class(info.name)
 
     nodes = {}
     for cn in sorted(all_class_names):

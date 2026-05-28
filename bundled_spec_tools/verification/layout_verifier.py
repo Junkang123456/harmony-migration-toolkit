@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from extractors.android_project import ANDROID_NS, res_dirs
+from extractors.ast_index import lookup_class
 
 
 def layout_fragment_refs(project_root: str | Path) -> dict[str, list[str]]:
@@ -49,8 +50,9 @@ def layout_verifier(
         "layout_only": [],
     }
     for short_name in sorted(refs):
-        if short_name in ast_hierarchy:
-            kind = resolve_android_base(short_name, ast_hierarchy)
+        info = lookup_class(ast_hierarchy, short_name)
+        if info is not None:
+            kind = resolve_android_base(info.fqn, ast_hierarchy)
             if kind == "fragment":
                 result["ast_fragment_count"] += 1
                 result["ast_fragment_matched"].append(short_name)

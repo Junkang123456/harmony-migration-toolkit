@@ -113,12 +113,12 @@ def bytecode_verifier(
     result["bytecode_activities"] = sorted(bc_activities)
 
     ast_fragments = {
-        name for name, info in ast_hierarchy.items()
-        if resolve_android_base(name, ast_hierarchy) == "fragment"
+        info.name for fqn, info in ast_hierarchy.items()
+        if resolve_android_base(fqn, ast_hierarchy) == "fragment"
     }
     ast_activities = {
-        name for name, info in ast_hierarchy.items()
-        if resolve_android_base(name, ast_hierarchy) == "activity"
+        info.name for fqn, info in ast_hierarchy.items()
+        if resolve_android_base(fqn, ast_hierarchy) == "activity"
     }
 
     result["ast_vs_bytecode_fragment_diff"] = {

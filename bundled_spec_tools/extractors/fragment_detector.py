@@ -80,11 +80,11 @@ def _ast_fragment_declarations(project_root: str, dep_roots: list[str] | None = 
     """使用 AST 继承链解析找到所有 Fragment 子类声明。"""
     hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
     results = []
-    for name, info in hierarchy.items():
-        base_type = _resolve_android_base(name, hierarchy)
+    for fqn, info in hierarchy.items():
+        base_type = _resolve_android_base(fqn, hierarchy)
         if base_type == "fragment":
             results.append({
-                "class": name,
+                "class": info.name,
                 "source_file": info.source_file,
                 "line": info.line,
                 "base_class": info.base_class or "",

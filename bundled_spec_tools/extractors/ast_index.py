@@ -267,11 +267,16 @@ def _is_dialog_like(name: str) -> bool:
 @dataclass
 class ClassInfo:
     name: str
+    package: str
     base_class: str | None
     interfaces: list[str]
     source_file: str
     language: str
     line: int = 0
+
+    @property
+    def fqn(self) -> str:
+        return f"{self.package}.{self.name}" if self.package else self.name
 
 
 _ANDROID_FRAGMENT_BASES = {
@@ -340,6 +345,17 @@ def _extract_base_class(source: bytes, class_node, language: str) -> str | None:
     return None
 
 
+def lookup_class(hierarchy: dict[str, ClassInfo], short_name: str) -> ClassInfo | None:
+    """Look up a class by short name in a FQN-keyed hierarchy."""
+    if short_name in hierarchy:
+        return hierarchy[short_name]
+    suffix = f".{short_name}"
+    for key, info in hierarchy.items():
+        if key.endswith(suffix) or info.name == short_name:
+            return info
+    return None
+
+
 def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
                           visited: set[str] | None = None) -> str:
     """沿继承链上溯，返回 fragment / activity / dialog / other。"""
@@ -349,7 +365,7 @@ def _resolve_android_base(kind: str, hierarchy: dict[str, ClassInfo],
         return "other"
     visited.add(kind)
 
-    info = hierarchy.get(kind)
+    info = hierarchy.get(kind) or lookup_class(hierarchy, kind)
     if info is None or info.base_class is None:
         if kind.endswith("Fragment"):
             return "fragment"
@@ -372,7 +388,7 @@ def build_class_hierarchy(
     dep_roots: list[str] | None = None,
     file_prefix: str = "",
 ) -> dict[str, ClassInfo]:
-    """构建项目全量类索引，含继承关系。"""
+    """构建项目全量类索引，含继承关系。Key 为 FQN（package.ClassName）。"""
     hierarchy: dict[str, ClassInfo] = {}
     roots: list[tuple[str, str]] = [(project_root, file_prefix)]
     if dep_roots:
@@ -392,14 +408,17 @@ def build_class_hierarchy(
                 continue
             root_node = tree.root_node()
             rel = _rel_path(src_path, root, prefix)
+            package = _package_name(source, root_node, language)
             for node in _walk(root_node):
                 if node.kind() not in ("class_declaration", "object_declaration", "interface_declaration"):
                     continue
                 name = _class_name(source, node)
                 if not name:
                     continue
-                hierarchy[name] = ClassInfo(
+                fqn = f"{package}.{name}" if package else name
+                hierarchy[fqn] = ClassInfo(
                     name=name,
+                    package=package,
                     base_class=_extract_base_class(source, node, language),
                     interfaces=[],
                     source_file=rel,

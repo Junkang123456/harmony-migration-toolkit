@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from extractors.android_project import ANDROID_NS, manifests
+from extractors.ast_index import lookup_class
 
 
 def manifest_activities(project_root: str | Path) -> dict[str, list[str]]:
@@ -43,8 +44,9 @@ def manifest_verifier(
         "manifest_only": [],
     }
     for short_name in sorted(man_acts):
-        if short_name in ast_hierarchy:
-            kind = resolve_android_base(short_name, ast_hierarchy)
+        info = lookup_class(ast_hierarchy, short_name)
+        if info is not None:
+            kind = resolve_android_base(info.fqn, ast_hierarchy)
             if kind == "activity":
                 result["ast_activity_count"] += 1
                 result["ast_activity_matched"].append(short_name)
