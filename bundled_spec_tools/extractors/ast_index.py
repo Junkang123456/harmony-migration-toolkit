@@ -304,16 +304,30 @@ def _extract_base_class(source: bytes, class_node, language: str) -> str | None:
                 if token and token not in ("extends", "implements") and token[0].isupper():
                     return token.split("<")[0].split(".")[-1]
         return None
+    # Kotlin: collect ALL delegation_specifiers, prefer constructor_invocation
+    # (class inheritance uses `()`, interface implementation doesn't)
+    ctor_candidates: list[str] = []
+    type_candidates: list[str] = []
     for child in _walk(class_node):
-        if child.kind() == "delegation_specifier":
-            for i in range(child.named_child_count()):
-                sub = child.named_child(i)
-                if sub.kind() in ("user_type", "constructor_invocation"):
-                    text = _node_text(source, sub)
-                    name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
-                    if name:
-                        return name
-            break
+        if child.kind() != "delegation_specifier":
+            continue
+        for i in range(child.named_child_count()):
+            sub = child.named_child(i)
+            if sub.kind() == "constructor_invocation":
+                text = _node_text(source, sub)
+                name = text.split("(")[0].split("<")[0].split(".")[-1].strip()
+                if name:
+                    ctor_candidates.append(name)
+            elif sub.kind() == "user_type":
+                text = _node_text(source, sub)
+                name = text.split("<")[0].split(".")[-1].strip()
+                if name:
+                    type_candidates.append(name)
+    if ctor_candidates:
+        return ctor_candidates[0]
+    if type_candidates:
+        return type_candidates[0]
+    # Fallback: super_type_list (older tree-sitter grammars)
     for child in _walk(class_node):
         if child.kind() == "super_type_list":
             for i in range(child.named_child_count()):
