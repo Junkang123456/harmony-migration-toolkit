@@ -10,6 +10,8 @@
         "method": "setOnClickListener",
         "event_type": "click",
         "enclosing_fn": "override fun onCreate(savedInstanceState: Bundle?) {",
+        "receiver_type": "Button",
+        "is_view": true,
         "enclosing_symbol_id": "fn:com.verifyfix.minimal.MainActivity.onCreate/1",
         "function_name": "onCreate",
         "function_range": {

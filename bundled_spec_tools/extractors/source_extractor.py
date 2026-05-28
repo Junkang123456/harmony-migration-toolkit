@@ -620,6 +620,51 @@ def _extract_viewref_id_map(source: str) -> dict[str, str]:
 
 
 # ══════════════════════════════════════════════════════
+# G. AST-based receiver type annotation
+# ══════════════════════════════════════════════════════
+
+def _annotate_receiver_types(findings: dict, project_root: str,
+                             file_path_map: dict[str, Path]):
+    """Post-process event_registrations: add receiver_type and is_view via AST."""
+    if ast_index is None or ast_index.get_parser is None:
+        return
+
+    hierarchy = ast_index.build_class_hierarchy(project_root)
+
+    by_file: dict[str, list[dict]] = {}
+    for reg in findings.get("event_registrations", []):
+        by_file.setdefault(reg["file"], []).append(reg)
+
+    for rel_path, regs in by_file.items():
+        actual_path = file_path_map.get(rel_path)
+        if not actual_path or not actual_path.exists():
+            continue
+
+        lang = "kotlin" if actual_path.suffix == ".kt" else (
+            "java" if actual_path.suffix == ".java" else "")
+        if not lang:
+            continue
+
+        try:
+            parser = ast_index.get_parser(lang)
+            source = actual_path.read_bytes()
+            tree = parser.parse(source.decode("utf-8"))
+        except Exception:
+            continue
+
+        var_types = ast_index.extract_variable_types(source, tree.root_node(), lang)
+
+        for reg in regs:
+            view_ref = reg.get("view_ref", "")
+            var_type = var_types.get(view_ref, "")
+            reg["receiver_type"] = var_type
+            if var_type:
+                reg["is_view"] = ast_index.is_view_type(var_type, hierarchy)
+            else:
+                reg["is_view"] = None
+
+
+# ══════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════
 
@@ -686,6 +731,7 @@ def run(project_root: str, file_prefix: str = "",
         "data_driven_ui":    [],
     }
     view_ref_id_map: dict[str, dict[str, str]] = {}
+    file_path_map: dict[str, Path] = {}
 
     for src in src_files:
         try:
@@ -697,6 +743,8 @@ def run(project_root: str, file_prefix: str = "",
         if file_prefix:
             rel = file_prefix + "/" + rel
 
+        file_path_map[rel] = src
+
         findings["id_dispatchers"].extend(extract_id_dispatchers(source, rel))
         if scan_events:
             findings["event_registrations"].extend(extract_event_registrations(source, rel))
@@ -707,6 +755,9 @@ def run(project_root: str, file_prefix: str = "",
         ref_map = _extract_viewref_id_map(source)
         if ref_map:
             view_ref_id_map[rel] = ref_map
+
+    if scan_events:
+        _annotate_receiver_types(findings, project_root, file_path_map)
 
     enriched_count = _enrich_findings_with_symbols(findings, project_root, file_prefix=file_prefix)
     stats = {k: len(v) for k, v in findings.items()}

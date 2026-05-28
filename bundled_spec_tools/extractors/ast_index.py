@@ -295,6 +295,29 @@ _ANDROID_DIALOG_BASES = {
     "Dialog", "AlertDialog", "BottomSheetDialog",
 }
 
+_ANDROID_VIEW_BASES = {
+    "View", "ViewGroup",
+    "TextView", "EditText", "AutoCompleteTextView", "MultiAutoCompleteTextView",
+    "Button", "ImageButton", "FloatingActionButton", "ToggleButton",
+    "CompoundButton", "CheckBox", "RadioButton", "Switch", "SwitchCompat",
+    "ImageView", "AppCompatImageView", "AppCompatImageButton",
+    "LinearLayout", "FrameLayout", "RelativeLayout", "ConstraintLayout",
+    "CoordinatorLayout", "DrawerLayout", "NestedScrollView",
+    "RecyclerView", "ListView", "GridView", "ViewPager", "ViewPager2",
+    "Toolbar", "MaterialToolbar", "AppBarLayout", "CollapsingToolbarLayout",
+    "ProgressBar", "SeekBar", "RatingBar",
+    "BottomNavigationView", "NavigationView", "TabLayout",
+    "Spinner", "SearchView",
+    "CardView", "Chip", "ChipGroup",
+    "WebView", "SurfaceView", "TextureView",
+    "ScrollView", "HorizontalScrollView",
+    "RadioGroup", "TableLayout", "TableRow",
+    "ViewStub", "ViewFlipper", "ViewSwitcher",
+    "AdapterView", "AbsListView", "AbsSpinner",
+    "CalendarView", "DatePicker", "TimePicker", "NumberPicker",
+    "Space", "CheckedTextView",
+}
+
 
 def _extract_supertypes(source: bytes, class_node, language: str) -> tuple[str | None, list[str]]:
     """Extract (base_class, interfaces) from a class declaration AST node."""
@@ -428,6 +451,36 @@ def _guess_type_from_name(name: str) -> str:
     if name.endswith("Activity"):
         return "activity"
     return "other"
+
+
+def is_view_type(type_name: str, hierarchy: dict[str, ClassInfo] | None = None) -> bool:
+    """Determine whether *type_name* is an Android View subclass."""
+    if not type_name:
+        return False
+    short = type_name.split(".")[-1]
+    if short in _ANDROID_VIEW_BASES:
+        return True
+    if hierarchy:
+        info = lookup_class(hierarchy, short)
+        if info is not None:
+            return _is_view_in_chain(info, hierarchy, set())
+    return False
+
+
+def _is_view_in_chain(info: ClassInfo, hierarchy: dict[str, ClassInfo],
+                      visited: set[str]) -> bool:
+    if info.fqn in visited:
+        return False
+    visited.add(info.fqn)
+    if info.name in _ANDROID_VIEW_BASES:
+        return True
+    if info.base_class:
+        if info.base_class in _ANDROID_VIEW_BASES:
+            return True
+        base_info = lookup_class(hierarchy, info.base_class)
+        if base_info is not None:
+            return _is_view_in_chain(base_info, hierarchy, visited)
+    return False
 
 
 def build_class_hierarchy(
@@ -665,3 +718,95 @@ def call_graph_payload(index: AstProjectIndex) -> dict[str, Any]:
             "ast_call_count": sum(1 for c in index.calls if str(c.get("confidence", "")).startswith("ast")),
         },
     }
+
+
+# ── Variable type extraction (for receiver type annotation) ────
+
+_KT_VAR_RE = re.compile(r'(?:val|var)\s+(\w+)')
+
+
+def extract_variable_types(source: bytes, root_node, language: str) -> dict[str, str]:
+    """Build {var_name: type_name} from declarations and parameters in the file."""
+    types: dict[str, str] = {}
+    for node in _walk(root_node):
+        if language == "kotlin":
+            if node.kind() == "property_declaration":
+                _collect_kotlin_prop_type(source, node, types)
+            elif node.kind() == "parameter":
+                _collect_param_type(source, node, language, types)
+        elif language == "java":
+            if node.kind() in ("local_variable_declaration", "field_declaration"):
+                _collect_java_decl_type(source, node, types)
+            elif node.kind() == "formal_parameter":
+                _collect_param_type(source, node, language, types)
+    return types
+
+
+def _collect_kotlin_prop_type(source: bytes, node, types: dict):
+    text = _node_text(source, node)
+    m = _KT_VAR_RE.search(text)
+    if not m:
+        return
+    name = m.group(1)
+
+    eq_pos = text.find("=")
+    decl_part = text[:eq_pos] if eq_pos > 0 else text
+
+    type_m = re.search(r":\s*([\w.]+)", decl_part)
+    if type_m:
+        types[name] = type_m.group(1).split(".")[-1]
+        return
+
+    if eq_pos < 0:
+        return
+    init = text[eq_pos + 1 :]
+
+    fvb = re.search(r"findViewById\s*<\s*(\w+)", init)
+    if fvb:
+        types[name] = fvb.group(1)
+        return
+
+    ctor = re.search(r"^\s*([A-Z]\w*)\s*[.(]", init)
+    if ctor:
+        types[name] = ctor.group(1)
+        return
+
+
+def _collect_java_decl_type(source: bytes, node, types: dict):
+    type_node = node.child_by_field_name("type")
+    if type_node is None:
+        type_node = _first_named_child(
+            node, {"type_identifier", "generic_type", "scoped_type_identifier"}
+        )
+    if type_node is None:
+        return
+    type_text = _node_text(source, type_node).split("<")[0].split(".")[-1].strip()
+    if not type_text:
+        return
+    for i in range(node.named_child_count()):
+        child = node.named_child(i)
+        if child.kind() == "variable_declarator":
+            name_node = child.child_by_field_name("name")
+            if name_node is None:
+                name_node = _first_named_child(child, {"identifier"})
+            if name_node is not None:
+                types[_node_text(source, name_node)] = type_text
+
+
+def _collect_param_type(source: bytes, node, language: str, types: dict):
+    if language == "kotlin":
+        name_node = _first_named_child(node, {"simple_identifier"})
+        type_node = _first_named_child(node, {"user_type"})
+    else:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            name_node = _first_named_child(node, {"identifier"})
+        type_node = node.child_by_field_name("type")
+        if type_node is None:
+            type_node = _first_named_child(node, {"type_identifier", "generic_type"})
+
+    if name_node is not None and type_node is not None:
+        var_name = _node_text(source, name_node)
+        type_text = _node_text(source, type_node).split("<")[0].split(".")[-1].strip()
+        if type_text:
+            types[var_name] = type_text
