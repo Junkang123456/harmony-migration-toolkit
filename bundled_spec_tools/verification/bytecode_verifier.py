@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bundled_spec_tools.extractors.bytecode_navigation import find_class_dir
-from bundled_spec_tools.extractors.class_parser import parse_class
+from extractors.bytecode_navigation import find_class_dir
+from extractors.class_parser import parse_class
 
 _ANDROID_FRAGMENT_BASES = {
     "androidx.fragment.app.Fragment", "android.app.Fragment",

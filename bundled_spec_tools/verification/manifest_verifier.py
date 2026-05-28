@@ -3,7 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from bundled_spec_tools.extractors.android_project import ANDROID_NS, manifests
+from extractors.android_project import ANDROID_NS, manifests
 
 
 def manifest_activities(project_root: str | Path) -> dict[str, list[str]]:
