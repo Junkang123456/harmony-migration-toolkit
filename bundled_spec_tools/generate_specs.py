@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                        layout_trees=None, fragments=None,
                        dynamic_elements=None, behavior_chains=None,
+                       lifecycle_hooks=None, adapter_layouts=None,
                        spec_version="1.0"):
     """为导航图中的每个屏幕生成 HarmonyOS 迁移 spec。"""
     specs_dir = Path(specs_dir)
@@ -245,7 +246,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                 for frag in fragments:
                     cid = frag.get("container_id", "")
                     host = frag.get("host_class", "")
-                    if cid in all_ids or host == class_name:
+                    if cid in all_ids or (class_name and host == class_name):
                         screen_fragments.append({
                             "class": frag.get("class", ""),
                             "container_id": cid,
@@ -255,7 +256,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             screen_dynamic = []
             if dynamic_elements:
                 for de in dynamic_elements:
-                    if de.get("host_class", "") == class_name:
+                    if class_name and de.get("host_class", "") == class_name:
                         screen_dynamic.append({
                             "view_type": de.get("view_type", ""),
                             "creation_method": de.get("creation_method", ""),
@@ -275,7 +276,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                 all_ids = {e.get("id", "") for e in elements if e.get("id")}
                 for bc in behavior_chains:
                     eid = bc.get("element_id", "")
-                    if eid in all_ids or bc.get("handler", {}).get("file", "").replace("\\", "/").find(class_name) >= 0:
+                    if eid in all_ids or (class_name and bc.get("handler", {}).get("file", "").replace("\\", "/").find(class_name) >= 0):
                         event_bindings.append({
                             "element_id": eid,
                             "event_type": bc.get("event_type", ""),
@@ -284,9 +285,31 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "chain_depth": bc.get("chain_depth", 0),
                         })
 
-            spec["L1_behavior"] = {
-                "event_bindings": event_bindings,
-            }
+            # lifecycle_hooks
+            screen_lifecycle = {}
+            if lifecycle_hooks and class_name in lifecycle_hooks:
+                screen_lifecycle = lifecycle_hooks[class_name]
+
+            # adapter_bindings
+            screen_adapters = []
+            if adapter_layouts:
+                for al in adapter_layouts:
+                    if al.get("host_class", "") == class_name:
+                        screen_adapters.append({
+                            "container_id": al.get("host_id", ""),
+                            "adapter_class": al.get("adapter_class", ""),
+                            "item_layout": al.get("item_layout", ""),
+                        })
+
+            l1_entry = {}
+            if event_bindings:
+                l1_entry["event_bindings"] = event_bindings
+            if screen_lifecycle:
+                l1_entry["lifecycle_hooks"] = screen_lifecycle
+            if screen_adapters:
+                l1_entry["adapter_bindings"] = screen_adapters
+            if l1_entry:
+                spec["L1_behavior"] = l1_entry
 
             spec["stats"]["fragments"] = len(screen_fragments)
             spec["stats"]["dynamic_elements"] = len(screen_dynamic)
