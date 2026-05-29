@@ -544,34 +544,28 @@ def _ast_show_fragment_calls(project_root: str, dep_roots: list[str] | None = No
 
 
 def _extract_show_receiver_class(source: bytes, show_node, hierarchy) -> str | None:
-    """Extract the fragment class from the receiver of .show().
-
-    Patterns:
-      - new SomeDialog().show(...)  →  SomeDialog
-      - SomeDialog.newInstance(...).show(...)  →  SomeDialog
-      - dialog.show(...)  →  trace variable
-    """
+    """Extract the fragment class from the receiver of .show()."""
     text = _ast_node_text(source, show_node)
 
-    # new SomeDialog().show(...)
-    m = re.search(r'new\s+(\w+)\s*\([^)]*\)\s*\.show', text)
+    # new SomeDialog(...).show(...)  — allow nested parens
+    m = re.search(r'new\s+(\w+)\s*\(', text)
     if m:
         cls = m.group(1)
         if _is_fragment_class(cls, hierarchy):
             return cls
 
     # SomeDialog.newInstance(...).show(...)
-    m = re.search(r'(\w+)\.newInstance\s*\([^)]*\)\s*\.show', text)
+    m = re.search(r'(\w+)\.newInstance\s*\(', text)
     if m:
         cls = m.group(1)
         if _is_fragment_class(cls, hierarchy):
             return cls
 
     # SomeDialog(...).show(...) — Kotlin constructor
-    m = re.search(r'(\w+)\s*\([^)]*\)\s*\.show', text)
+    m = re.search(r'([A-Z]\w+)\s*\(', text)
     if m:
         cls = m.group(1)
-        if cls[0].isupper() and _is_fragment_class(cls, hierarchy):
+        if _is_fragment_class(cls, hierarchy):
             return cls
 
     # variable.show(...) — try to trace
@@ -644,6 +638,79 @@ def _ast_switch_factory(project_root: str, dep_roots: list[str] | None = None,
                         "line": line,
                         "source_file": rel,
                         "detection": "switch_factory",
+                    })
+
+    return results
+
+
+# ── Pattern 9: fragment instantiation in return/assignment context ──
+
+_RETURN_NEW_FRAG_RE = re.compile(
+    r'return\s+(?:new\s+)?(\w+)\s*\(',
+    re.MULTILINE,
+)
+
+_ASSIGN_NEW_FRAG_RE = re.compile(
+    r'\b\w+\s*=\s*new\s+(\w+)\s*\(',
+    re.MULTILINE,
+)
+
+_ASSIGN_KT_FRAG_RE = re.compile(
+    r'\b\w+\s*=\s*([A-Z]\w*Fragment\w*|[A-Z]\w*Dialog\w*|[A-Z]\w*Section\w*|[A-Z]\w*BottomSheet\w*)\s*\(',
+    re.MULTILINE,
+)
+
+_ADD_SECTION_RE = re.compile(
+    r'addSection\s*\(\s*(?:new\s+)?(\w+)\s*\(',
+    re.MULTILINE,
+)
+
+
+def _scan_fragment_instantiations(project_root: str, dep_roots: list[str] | None = None,
+                                    file_prefix: str = "",
+                                    hierarchy: dict | None = None) -> list[dict]:
+    """Detect fragment instantiations via return/assignment/addSection patterns.
+
+    Catches fragments created in:
+      - ViewPager adapter createFragment(): return new SomeFragment()
+      - if-else factory: prefFragment = new SomeFragment()
+      - addSection(new SomeFragment())
+    Host = enclosing class.
+    """
+    if hierarchy is None:
+        hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+
+    results: list[dict] = []
+    roots = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for f in android_project.source_files(root_path):
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            rel = android_project.relative_to_root(f, root, prefix)
+
+            for pattern in (_RETURN_NEW_FRAG_RE, _ASSIGN_NEW_FRAG_RE,
+                           _ASSIGN_KT_FRAG_RE, _ADD_SECTION_RE):
+                for m in pattern.finditer(content):
+                    cls = m.group(1)
+                    if not _is_fragment_class(cls, hierarchy):
+                        continue
+                    line = _line_number(content, m.start())
+                    host = _find_host_class(content, line - 1)
+                    results.append({
+                        "class": cls,
+                        "container_id": "",
+                        "attach_method": "FragmentTransaction.replace",
+                        "host_class": host,
+                        "host_file": rel,
+                        "line": line,
+                        "source_file": rel,
+                        "detection": "instantiation_context",
                     })
 
     return results
@@ -835,6 +902,12 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                                          hierarchy=hierarchy)
     for ff in factory_frags:
         fragments.append(ff)
+
+    # Pattern 9: fragment instantiation in return/assignment/addSection
+    inst_frags = _scan_fragment_instantiations(project_root, dep_roots, file_prefix,
+                                                hierarchy=hierarchy)
+    for inf in inst_frags:
+        fragments.append(inf)
 
     attached_names = {f["class"] for f in fragments}
     for decl in ast_decls:
