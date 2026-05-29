@@ -139,27 +139,26 @@ def _resolve_fragment_arg(source: bytes, arg_node, scope_node, hierarchy) -> str
     Handles:
       - Direct constructor: SomeFragment() / new SomeFragment()
       - Companion newInstance: SomeFragment.newInstance(...)
+      - Java method_invocation: SomeFragment.newInstance(...)
       - Variable reference: val f = SomeFragment(); tx.replace(..., f)
     """
     text = _ast_node_text(source, arg_node).strip()
 
-    # 1. Direct constructor: SomeFragment() or SomeFragment.newInstance(...)
+    # 1. Kotlin call_expression: SomeFragment() or SomeFragment.newInstance(...)
     if arg_node.kind() == "call_expression":
         callee = arg_node.named_child(0) if arg_node.named_child_count() > 0 else None
         if callee is not None:
             callee_text = _ast_node_text(source, callee)
-            # SomeFragment.newInstance(...) or SomeFragment.Companion.newInstance(...)
             if ".newInstance" in callee_text or ".Companion." in callee_text:
                 cls = callee_text.split(".")[0].strip()
                 if cls and cls[0].isupper():
                     return cls
-            # SomeFragment()
             if callee.kind() in {"simple_identifier", "identifier"}:
                 cls = callee_text.strip()
                 if cls and cls[0].isupper() and _is_fragment_class(cls, hierarchy):
                     return cls
 
-    # Java: new SomeFragment()
+    # 2. Java: new SomeFragment()
     if arg_node.kind() == "object_creation_expression":
         type_node = arg_node.child_by_field_name("type") or _ast_first_child(
             arg_node, {"type_identifier", "scoped_type_identifier"}
@@ -169,18 +168,46 @@ def _resolve_fragment_arg(source: bytes, arg_node, scope_node, hierarchy) -> str
             if cls and _is_fragment_class(cls, hierarchy):
                 return cls
 
-    # 2. Variable reference: look up declaration in scope
+    # 3. Java method_invocation: SomeFragment.newInstance(...)
+    if arg_node.kind() == "method_invocation":
+        obj = arg_node.child_by_field_name("object")
+        name = arg_node.child_by_field_name("name")
+        if obj is not None and name is not None:
+            method = _ast_node_text(source, name)
+            if method == "newInstance":
+                cls = _ast_node_text(source, obj).split(".")[-1].strip()
+                if cls and cls[0].isupper() and _is_fragment_class(cls, hierarchy):
+                    return cls
+
+    # 4. Variable reference: look up declaration in scope
     if arg_node.kind() in {"simple_identifier", "identifier"}:
         var_name = text
         return _trace_variable_to_fragment(source, var_name, scope_node, hierarchy)
 
-    # 3. Dotted expression ending in fragment-like name
-    if "." in text:
-        parts = text.split(".")
-        last = parts[-1].split("(")[0].strip()
-        if last and last[0].isupper() and _is_fragment_class(last, hierarchy):
-            return last
+    # 5. Text fallback: extract class from common patterns
+    return _extract_fragment_from_text(text, hierarchy)
 
+
+def _extract_fragment_from_text(text: str, hierarchy) -> str | None:
+    """Regex fallback: extract fragment class name from expression text."""
+    # SomeFragment.newInstance(...)
+    m = re.search(r'(\w+)\.newInstance\s*\(', text)
+    if m:
+        cls = m.group(1)
+        if cls[0].isupper() and _is_fragment_class(cls, hierarchy):
+            return cls
+    # new SomeFragment(...)
+    m = re.search(r'new\s+(\w+)\s*\(', text)
+    if m:
+        cls = m.group(1)
+        if _is_fragment_class(cls, hierarchy):
+            return cls
+    # SomeFragment(...)  — Kotlin constructor
+    m = re.search(r'(\w+)\s*\(', text)
+    if m:
+        cls = m.group(1)
+        if cls[0].isupper() and _is_fragment_class(cls, hierarchy):
+            return cls
     return None
 
 
@@ -558,6 +585,70 @@ def _extract_show_receiver_class(source: bytes, show_node, hierarchy) -> str | N
     return None
 
 
+# ── Pattern 8: switch/case fragment factory ──
+
+_SWITCH_FACTORY_RE = re.compile(
+    r'case\s+(\w+)\.TAG\s*:\s*(?:.*\n)*?.*?'
+    r'(?:fragment\s*=\s*)?(?:new\s+)?(\w+)\s*[\(.]',
+    re.MULTILINE,
+)
+
+_RETURN_FACTORY_RE = re.compile(
+    r'case\s+(\w+)\.TAG\s*:\s*(?:.*\n)*?.*?'
+    r'return\s+(?:new\s+)?(\w+)\s*[\(.]',
+    re.MULTILINE,
+)
+
+
+def _ast_switch_factory(project_root: str, dep_roots: list[str] | None = None,
+                         file_prefix: str = "",
+                         hierarchy: dict | None = None) -> list[dict]:
+    """Detect switch-case fragment factories like createFragmentInstance().
+
+    Pattern: switch(tag) { case SomeFragment.TAG: fragment = new SomeFragment(); }
+    Host = the class containing the factory method.
+    """
+    if hierarchy is None:
+        hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+
+    results: list[dict] = []
+    roots = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for f in android_project.source_files(root_path):
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            rel = android_project.relative_to_root(f, root, prefix)
+            host = ""
+            for m in _CLASS_DECL_RE.finditer(content):
+                host = m.group(1)
+
+            for pattern in (_SWITCH_FACTORY_RE, _RETURN_FACTORY_RE):
+                for m in pattern.finditer(content):
+                    tag_class = m.group(1)
+                    frag_class = m.group(2)
+                    if not _is_fragment_class(frag_class, hierarchy):
+                        continue
+                    line = _line_number(content, m.start())
+                    results.append({
+                        "class": frag_class,
+                        "container_id": "",
+                        "attach_method": "FragmentTransaction.replace",
+                        "host_class": host,
+                        "host_file": rel,
+                        "line": line,
+                        "source_file": rel,
+                        "detection": "switch_factory",
+                    })
+
+    return results
+
+
 def _get_call_method_name(source: bytes, node) -> str:
     """Extract the method name from a call_expression or method_invocation."""
     if node.kind() == "method_invocation":
@@ -738,6 +829,12 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                                            hierarchy=hierarchy)
     for sf in show_frags:
         fragments.append(sf)
+
+    # Pattern 8: switch-case fragment factory (createFragmentInstance etc.)
+    factory_frags = _ast_switch_factory(project_root, dep_roots, file_prefix,
+                                         hierarchy=hierarchy)
+    for ff in factory_frags:
+        fragments.append(ff)
 
     attached_names = {f["class"] for f in fragments}
     for decl in ast_decls:
