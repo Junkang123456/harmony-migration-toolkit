@@ -316,6 +316,248 @@ def _ast_fragment_transactions(project_root: str, dep_roots: list[str] | None = 
     return results
 
 
+_LOAD_FRAGMENT_METHODS = {"loadFragment", "loadChildFragment"}
+
+
+def _ast_load_fragment_calls(project_root: str, dep_roots: list[str] | None = None,
+                              file_prefix: str = "",
+                              hierarchy: dict | None = None) -> list[dict]:
+    """Detect loadFragment(Fragment)/loadChildFragment(Fragment) calls via AST.
+
+    Covers patterns like:
+      - loadChildFragment(new SomeFragment())
+      - loadChildFragment(SomeFragment.newInstance(...))
+      - ((MainActivity) getActivity()).loadChildFragment(someFragment)
+    Host is resolved from the class that defines loadFragment/loadChildFragment.
+    """
+    if _get_parser is None:
+        return []
+    if hierarchy is None:
+        hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+
+    # Find which classes define loadFragment/loadChildFragment
+    host_classes = _find_load_fragment_hosts(project_root, dep_roots, file_prefix, hierarchy)
+
+    results: list[dict] = []
+    roots = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for src_path in _ast_source_files(root):
+            language = _ast_language_for(src_path)
+            if not language:
+                continue
+            try:
+                parser = _get_parser(language)
+                source = src_path.read_bytes()
+                tree = parser.parse(source.decode("utf-8"))
+            except Exception:
+                continue
+            root_node = tree.root_node()
+            rel = _ast_rel_path(src_path, root, prefix)
+            source_text = source.decode("utf-8", errors="ignore")
+
+            for node in _ast_walk(root_node):
+                if node.kind() not in {"call_expression", "method_invocation"}:
+                    continue
+                method_name = _get_call_method_name(source, node)
+                if method_name not in _LOAD_FRAGMENT_METHODS:
+                    continue
+
+                args_node = _get_args_node(node)
+                if args_node is None or args_node.named_child_count() < 1:
+                    continue
+
+                frag_arg = args_node.named_child(0)
+                scope = _find_enclosing_function_node(node) or root_node
+                frag_class = _resolve_fragment_arg(source, frag_arg, scope, hierarchy)
+                if not frag_class:
+                    continue
+
+                # Determine host: cast target or class defining the method
+                host = _resolve_load_fragment_host(source, node, host_classes)
+                if not host:
+                    host = _find_enclosing_class(source, node)
+
+                line = _ast_line(node)
+                results.append({
+                    "class": frag_class,
+                    "container_id": "",
+                    "attach_method": f"FragmentTransaction.replace",
+                    "host_class": host,
+                    "host_file": rel,
+                    "line": line,
+                    "source_file": rel,
+                    "detection": "ast_load_fragment",
+                })
+
+    return results
+
+
+def _find_load_fragment_hosts(project_root: str, dep_roots: list[str] | None,
+                               file_prefix: str, hierarchy: dict) -> set[str]:
+    """Find classes that define loadFragment/loadChildFragment methods."""
+    hosts: set[str] = set()
+    if _get_parser is None:
+        return hosts
+    roots = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for src_path in _ast_source_files(root):
+            language = _ast_language_for(src_path)
+            if not language:
+                continue
+            try:
+                parser = _get_parser(language)
+                source = src_path.read_bytes()
+                tree = parser.parse(source.decode("utf-8"))
+            except Exception:
+                continue
+            for node in _ast_walk(tree.root_node()):
+                if node.kind() not in {"function_declaration", "method_declaration"}:
+                    continue
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    name_node = _ast_first_child(node, {"simple_identifier", "identifier"})
+                if name_node and _ast_node_text(source, name_node) in _LOAD_FRAGMENT_METHODS:
+                    cls = _find_enclosing_class(source, node)
+                    if cls:
+                        hosts.add(cls)
+    return hosts
+
+
+def _resolve_load_fragment_host(source: bytes, call_node, host_classes: set[str]) -> str:
+    """Resolve the host from cast expressions like ((MainActivity) getActivity())."""
+    text = _ast_node_text(source, call_node)
+    # Java cast: ((MainActivity) getActivity()).loadChildFragment(...)
+    m = re.search(r'\(\((\w+)\)\s*(?:getActivity|requireActivity)\s*\(\)\)', text)
+    if m and m.group(1) in host_classes:
+        return m.group(1)
+    # Kotlin cast: (activity as MainActivity).loadChildFragment(...)
+    m = re.search(r'as\s+(\w+)', text)
+    if m and m.group(1) in host_classes:
+        return m.group(1)
+    # Direct call inside host class: loadChildFragment(...)
+    for host in host_classes:
+        if f"{host}." in text or text.startswith("loadChildFragment") or text.startswith("loadFragment"):
+            return host
+    return ""
+
+
+def _ast_show_fragment_calls(project_root: str, dep_roots: list[str] | None = None,
+                              file_prefix: str = "",
+                              hierarchy: dict | None = None) -> list[dict]:
+    """Detect DialogFragment.show(fragmentManager, tag) calls via AST.
+
+    Covers patterns like:
+      - new SomeDialog().show(getSupportFragmentManager(), tag)
+      - SomeDialog.newInstance(...).show(getChildFragmentManager(), tag)
+    """
+    if _get_parser is None:
+        return []
+    if hierarchy is None:
+        hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+
+    results: list[dict] = []
+    roots = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for src_path in _ast_source_files(root):
+            language = _ast_language_for(src_path)
+            if not language:
+                continue
+            try:
+                parser = _get_parser(language)
+                source = src_path.read_bytes()
+                tree = parser.parse(source.decode("utf-8"))
+            except Exception:
+                continue
+            root_node = tree.root_node()
+            rel = _ast_rel_path(src_path, root, prefix)
+
+            for node in _ast_walk(root_node):
+                if node.kind() not in {"call_expression", "method_invocation"}:
+                    continue
+                method_name = _get_call_method_name(source, node)
+                if method_name != "show":
+                    continue
+
+                text = _ast_node_text(source, node)
+                lower = text.lower()
+                if "fragmentmanager" not in lower and "getsupportfragmentmanager" not in lower \
+                        and "getchildfragmentmanager" not in lower \
+                        and "getparentfragmentmanager" not in lower:
+                    continue
+
+                frag_class = _extract_show_receiver_class(source, node, hierarchy)
+                if not frag_class:
+                    continue
+
+                host = _find_enclosing_class(source, node)
+                line = _ast_line(node)
+                results.append({
+                    "class": frag_class,
+                    "container_id": "",
+                    "attach_method": "FragmentTransaction.add",
+                    "host_class": host,
+                    "host_file": rel,
+                    "line": line,
+                    "source_file": rel,
+                    "detection": "ast_show",
+                })
+
+    return results
+
+
+def _extract_show_receiver_class(source: bytes, show_node, hierarchy) -> str | None:
+    """Extract the fragment class from the receiver of .show().
+
+    Patterns:
+      - new SomeDialog().show(...)  →  SomeDialog
+      - SomeDialog.newInstance(...).show(...)  →  SomeDialog
+      - dialog.show(...)  →  trace variable
+    """
+    text = _ast_node_text(source, show_node)
+
+    # new SomeDialog().show(...)
+    m = re.search(r'new\s+(\w+)\s*\([^)]*\)\s*\.show', text)
+    if m:
+        cls = m.group(1)
+        if _is_fragment_class(cls, hierarchy):
+            return cls
+
+    # SomeDialog.newInstance(...).show(...)
+    m = re.search(r'(\w+)\.newInstance\s*\([^)]*\)\s*\.show', text)
+    if m:
+        cls = m.group(1)
+        if _is_fragment_class(cls, hierarchy):
+            return cls
+
+    # SomeDialog(...).show(...) — Kotlin constructor
+    m = re.search(r'(\w+)\s*\([^)]*\)\s*\.show', text)
+    if m:
+        cls = m.group(1)
+        if cls[0].isupper() and _is_fragment_class(cls, hierarchy):
+            return cls
+
+    # variable.show(...) — try to trace
+    m = re.match(r'(\w+)\.show', text)
+    if m:
+        var_name = m.group(1)
+        scope = _find_enclosing_function_node(show_node)
+        if scope:
+            return _trace_variable_to_fragment(source, var_name, scope, hierarchy)
+
+    return None
+
+
 def _get_call_method_name(source: bytes, node) -> str:
     """Extract the method name from a call_expression or method_invocation."""
     if node.kind() == "method_invocation":
@@ -482,9 +724,20 @@ def run(project_root: str, dep_roots: list[str] | None = None,
     # Pattern 5: AST data-flow fragment transactions
     ast_tx = _ast_fragment_transactions(project_root, dep_roots, file_prefix,
                                          hierarchy=hierarchy)
-    # Merge AST transactions (higher priority than class_declaration)
     for tx in ast_tx:
         fragments.append(tx)
+
+    # Pattern 6: loadFragment/loadChildFragment calls
+    load_frags = _ast_load_fragment_calls(project_root, dep_roots, file_prefix,
+                                           hierarchy=hierarchy)
+    for lf in load_frags:
+        fragments.append(lf)
+
+    # Pattern 7: DialogFragment.show() calls
+    show_frags = _ast_show_fragment_calls(project_root, dep_roots, file_prefix,
+                                           hierarchy=hierarchy)
+    for sf in show_frags:
+        fragments.append(sf)
 
     attached_names = {f["class"] for f in fragments}
     for decl in ast_decls:
