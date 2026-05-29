@@ -11,7 +11,19 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from extractors import android_project
-from extractors.ast_index import build_class_hierarchy, _resolve_android_base
+from extractors.ast_index import (
+    build_class_hierarchy, _resolve_android_base, lookup_class,
+    _walk as _ast_walk, _node_text as _ast_node_text,
+    _line as _ast_line, _source_files as _ast_source_files,
+    _language_for as _ast_language_for, _rel_path as _ast_rel_path,
+    _class_name as _ast_class_name_node,
+    _first_named_child as _ast_first_child,
+)
+
+try:
+    from tree_sitter_language_pack import get_parser as _get_parser
+except Exception:
+    _get_parser = None
 
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 
@@ -76,9 +88,11 @@ def _is_fragment_name(name: str) -> bool:
 
 
 def _ast_fragment_declarations(project_root: str, dep_roots: list[str] | None = None,
-                                file_prefix: str = "") -> list[dict]:
-    """使用 AST 继承链解析找到所有 Fragment 子类声明。"""
-    hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+                                file_prefix: str = "",
+                                hierarchy: dict | None = None) -> tuple[list[dict], dict]:
+    """使用 AST 继承链解析找到所有 Fragment 子类声明。返回 (results, hierarchy)。"""
+    if hierarchy is None:
+        hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
     results = []
     for fqn, info in hierarchy.items():
         base_type = _resolve_android_base(fqn, hierarchy)
@@ -90,7 +104,265 @@ def _ast_fragment_declarations(project_root: str, dep_roots: list[str] | None = 
                 "base_class": info.base_class or "",
                 "detection": "ast",
             })
+    return results, hierarchy
+
+
+def _find_enclosing_class(source: bytes, node) -> str:
+    cur = node.parent()
+    while cur is not None:
+        if cur.kind() in {"class_declaration", "object_declaration"}:
+            return _ast_class_name_node(source, cur)
+        cur = cur.parent()
+    return ""
+
+
+def _find_enclosing_function(source: bytes, node) -> str:
+    cur = node.parent()
+    while cur is not None:
+        if cur.kind() in {"function_declaration", "method_declaration"}:
+            name_node = cur.child_by_field_name("name")
+            if name_node is not None:
+                return _ast_node_text(source, name_node)
+            child = _ast_first_child(cur, {"simple_identifier", "identifier"})
+            return _ast_node_text(source, child) if child else ""
+        cur = cur.parent()
+    return ""
+
+
+_FRAGMENT_TX_METHODS = {"replace", "add", "show", "commit", "beginTransaction"}
+_TX_ATTACH_METHODS = {"replace", "add"}
+
+
+def _resolve_fragment_arg(source: bytes, arg_node, scope_node, hierarchy) -> str | None:
+    """Resolve a fragment argument to a class name.
+
+    Handles:
+      - Direct constructor: SomeFragment() / new SomeFragment()
+      - Companion newInstance: SomeFragment.newInstance(...)
+      - Variable reference: val f = SomeFragment(); tx.replace(..., f)
+    """
+    text = _ast_node_text(source, arg_node).strip()
+
+    # 1. Direct constructor: SomeFragment() or SomeFragment.newInstance(...)
+    if arg_node.kind() == "call_expression":
+        callee = arg_node.named_child(0) if arg_node.named_child_count() > 0 else None
+        if callee is not None:
+            callee_text = _ast_node_text(source, callee)
+            # SomeFragment.newInstance(...) or SomeFragment.Companion.newInstance(...)
+            if ".newInstance" in callee_text or ".Companion." in callee_text:
+                cls = callee_text.split(".")[0].strip()
+                if cls and cls[0].isupper():
+                    return cls
+            # SomeFragment()
+            if callee.kind() in {"simple_identifier", "identifier"}:
+                cls = callee_text.strip()
+                if cls and cls[0].isupper() and _is_fragment_class(cls, hierarchy):
+                    return cls
+
+    # Java: new SomeFragment()
+    if arg_node.kind() == "object_creation_expression":
+        type_node = arg_node.child_by_field_name("type") or _ast_first_child(
+            arg_node, {"type_identifier", "scoped_type_identifier"}
+        )
+        if type_node is not None:
+            cls = _ast_node_text(source, type_node).split(".")[-1].split("<")[0].strip()
+            if cls and _is_fragment_class(cls, hierarchy):
+                return cls
+
+    # 2. Variable reference: look up declaration in scope
+    if arg_node.kind() in {"simple_identifier", "identifier"}:
+        var_name = text
+        return _trace_variable_to_fragment(source, var_name, scope_node, hierarchy)
+
+    # 3. Dotted expression ending in fragment-like name
+    if "." in text:
+        parts = text.split(".")
+        last = parts[-1].split("(")[0].strip()
+        if last and last[0].isupper() and _is_fragment_class(last, hierarchy):
+            return last
+
+    return None
+
+
+def _trace_variable_to_fragment(source: bytes, var_name: str, scope_node, hierarchy) -> str | None:
+    """Walk backwards through scope to find where var_name was assigned a Fragment."""
+    for node in _ast_walk(scope_node):
+        if node.kind() == "property_declaration":
+            text = _ast_node_text(source, node)
+            m = re.match(r'(?:val|var)\s+' + re.escape(var_name) + r'\s*(?::\s*\w+)?\s*=', text)
+            if m:
+                eq_pos = text.find("=")
+                if eq_pos >= 0:
+                    init = text[eq_pos + 1:].strip()
+                    ctor = re.match(r'([A-Z]\w*)\s*[.(]', init)
+                    if ctor:
+                        cls = ctor.group(1)
+                        if _is_fragment_class(cls, hierarchy):
+                            return cls
+                    ni = re.match(r'([A-Z]\w*)\.(?:newInstance|Companion)', init)
+                    if ni:
+                        cls = ni.group(1)
+                        if _is_fragment_class(cls, hierarchy):
+                            return cls
+
+        elif node.kind() in {"local_variable_declaration", "variable_declarator"}:
+            for i in range(node.named_child_count()):
+                child = node.named_child(i)
+                if child.kind() == "variable_declarator":
+                    name_node = child.child_by_field_name("name") or _ast_first_child(
+                        child, {"identifier"}
+                    )
+                    if name_node and _ast_node_text(source, name_node) == var_name:
+                        val_node = child.child_by_field_name("value")
+                        if val_node:
+                            return _resolve_fragment_arg(source, val_node, scope_node, hierarchy)
+    return None
+
+
+def _is_fragment_class(name: str, hierarchy) -> bool:
+    if _is_fragment_name(name):
+        return True
+    if hierarchy:
+        info = lookup_class(hierarchy, name)
+        if info is not None:
+            return _resolve_android_base(info.fqn, hierarchy) == "fragment"
+    return False
+
+
+def _extract_container_id(source: bytes, args_node) -> str:
+    """Extract R.id.xxx from the first argument of replace/add."""
+    if args_node is None or args_node.named_child_count() == 0:
+        return ""
+    first_arg = args_node.named_child(0)
+    text = _ast_node_text(source, first_arg)
+    m = re.search(r'R\.id\.(\w+)', text)
+    return m.group(1) if m else ""
+
+
+def _ast_fragment_transactions(project_root: str, dep_roots: list[str] | None = None,
+                                file_prefix: str = "",
+                                hierarchy: dict | None = None) -> list[dict]:
+    """Use AST to find FragmentTransaction.replace/add calls and resolve fragment arguments."""
+    if _get_parser is None:
+        return []
+
+    if hierarchy is None:
+        hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+
+    results: list[dict] = []
+    roots = [(project_root, file_prefix)]
+    if dep_roots:
+        roots.extend((d, Path(d).name) for d in dep_roots)
+
+    for root_path, prefix in roots:
+        root = Path(root_path)
+        for src_path in _ast_source_files(root):
+            language = _ast_language_for(src_path)
+            if not language:
+                continue
+            try:
+                parser = _get_parser(language)
+                source = src_path.read_bytes()
+                tree = parser.parse(source.decode("utf-8"))
+            except Exception:
+                continue
+            root_node = tree.root_node()
+            rel = _ast_rel_path(src_path, root, prefix)
+
+            for node in _ast_walk(root_node):
+                if node.kind() not in {"call_expression", "method_invocation"}:
+                    continue
+                call_text = _ast_node_text(source, node)
+
+                # Match .replace(...) / .add(...) on fragment transaction
+                method_name = _get_call_method_name(source, node)
+                if method_name not in _TX_ATTACH_METHODS:
+                    continue
+
+                # Check receiver looks like a FragmentTransaction
+                if not _looks_like_fragment_transaction(source, node, call_text):
+                    continue
+
+                # Get arguments
+                args_node = _get_args_node(node)
+                if args_node is None or args_node.named_child_count() < 2:
+                    continue
+
+                container_id = _extract_container_id(source, args_node)
+                frag_arg = args_node.named_child(1)
+
+                # Find the enclosing function/class to use as scope
+                scope = _find_enclosing_function_node(node)
+                if scope is None:
+                    scope = root_node
+
+                frag_class = _resolve_fragment_arg(source, frag_arg, scope, hierarchy)
+                if not frag_class:
+                    continue
+
+                host_class = _find_enclosing_class(source, node)
+                line = _ast_line(node)
+                results.append({
+                    "class": frag_class,
+                    "container_id": container_id,
+                    "attach_method": f"FragmentTransaction.{method_name}",
+                    "host_class": host_class,
+                    "host_file": rel,
+                    "line": line,
+                    "source_file": rel,
+                    "detection": "ast_dataflow",
+                })
+
     return results
+
+
+def _get_call_method_name(source: bytes, node) -> str:
+    """Extract the method name from a call_expression or method_invocation."""
+    if node.kind() == "method_invocation":
+        name_node = node.child_by_field_name("name")
+        return _ast_node_text(source, name_node) if name_node else ""
+    # Kotlin call_expression: navigation_member_expression . simple_identifier
+    if node.named_child_count() > 0:
+        first = node.named_child(0)
+        text = _ast_node_text(source, first)
+        if "." in text:
+            return text.rsplit(".", 1)[-1].strip()
+    return ""
+
+
+def _looks_like_fragment_transaction(source: bytes, node, call_text: str) -> bool:
+    """Heuristic: receiver contains 'transaction', 'beginTransaction', 'childFragmentManager',
+    'supportFragmentManager', or 'fragmentManager'."""
+    lower = call_text.lower()
+    keywords = ("transaction", "fragmentmanager", "begintransaction",
+                "childfragmentmanager", "supportfragmentmanager")
+    if any(k in lower for k in keywords):
+        return True
+    # Also match: variable.replace(...) where variable was assigned from beginTransaction
+    if node.kind() == "method_invocation":
+        obj = node.child_by_field_name("object")
+        if obj is not None:
+            obj_text = _ast_node_text(source, obj).lower()
+            return any(k in obj_text for k in keywords)
+    return False
+
+
+def _get_args_node(node):
+    """Get the arguments/value_arguments node from a call."""
+    args = node.child_by_field_name("arguments")
+    if args is not None:
+        return args
+    return _ast_first_child(node, {"value_arguments", "argument_list"})
+
+
+def _find_enclosing_function_node(node):
+    cur = node.parent()
+    while cur is not None:
+        if cur.kind() in {"function_declaration", "method_declaration",
+                          "function_body", "class_body"}:
+            return cur
+        cur = cur.parent()
+    return None
 
 
 def _scan_source_files(project_root: str, dep_roots: list[str] | None,
@@ -200,8 +472,20 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                                 "source_file": rel,
                             })
 
+    # Build class hierarchy once, share between AST passes
+    hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
+
     # Pattern 4: AST-based fragment class declarations (inheritance chain aware)
-    ast_decls = _ast_fragment_declarations(project_root, dep_roots, file_prefix)
+    ast_decls, hierarchy = _ast_fragment_declarations(project_root, dep_roots, file_prefix,
+                                                       hierarchy=hierarchy)
+
+    # Pattern 5: AST data-flow fragment transactions
+    ast_tx = _ast_fragment_transactions(project_root, dep_roots, file_prefix,
+                                         hierarchy=hierarchy)
+    # Merge AST transactions (higher priority than class_declaration)
+    for tx in ast_tx:
+        fragments.append(tx)
+
     attached_names = {f["class"] for f in fragments}
     for decl in ast_decls:
         if decl["class"] not in attached_names:
