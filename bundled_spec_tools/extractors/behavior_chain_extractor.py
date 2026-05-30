@@ -826,7 +826,7 @@ def extract_lifecycle_hooks(
 # ── view_ref → element_id resolution ─────────────────────────────────────────
 
 _ID_FIND_RE = re.compile(
-    r'(?:val|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*'
+    r'(?:(?:val|var)\s+)?(\w+)\s*(?::\s*\w+)?\s*=\s*'
     r'(?:\w+\s*\.\s*)?findViewById\w*\s*(?:<[^>]*>\s*)?\(\s*R\.id\.(\w+)',
 )
 
