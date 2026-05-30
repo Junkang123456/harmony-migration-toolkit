@@ -404,6 +404,37 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
 
     print(f"\nGenerated {generated} specs in {specs_dir}")
 
+    # ── screen_index.json — global summary for LLM overview ──
+    index_entries = []
+    for spec_path in sorted(specs_dir.glob("*_spec.json")):
+        try:
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        brief = spec.get("brief", {})
+        all_actions: list[str] = []
+        for ctrl in brief.get("interactive_controls", []):
+            all_actions.extend(ctrl.get("actions", []))
+        index_entries.append({
+            "layout": spec.get("layout", ""),
+            "class": spec.get("class", ""),
+            "type": spec.get("screen_type", ""),
+            "controls": len(spec.get("ui_elements", [])),
+            "interactive": sum(1 for e in spec.get("ui_elements", []) if e.get("is_interactive")),
+            "event_bindings": spec.get("stats", {}).get("event_bindings", 0),
+            "nav_in": brief.get("nav_in", []),
+            "nav_out": brief.get("nav_out", []),
+            "tags": list(dict.fromkeys(all_actions)),
+            "spec_file": spec_path.name,
+        })
+
+    index_path = specs_dir.parent / "screen_index.json"
+    index_data = {
+        "total_screens": len(index_entries),
+        "screens": index_entries,
+    }
+    index_path.write_text(json.dumps(index_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
 
 if __name__ == "__main__":
     BASE = Path(__file__).parent / "output"
