@@ -821,10 +821,7 @@ _ID_FIND_RE = re.compile(
 )
 
 
-def _camel_to_snake(name: str) -> str:
-    s = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", name)
-    s = re.sub(r"(?<=[a-zA-Z])(?=[0-9])", "_", s)
-    return s.lower()
+from .view_ref_utils import camel_to_snake as _camel_to_snake
 
 
 def _build_viewref_to_id(source: str) -> dict[str, str]:

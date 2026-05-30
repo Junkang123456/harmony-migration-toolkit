@@ -17,33 +17,9 @@ import json
 import re
 from pathlib import Path
 
-
-def _camel_to_snake(name: str) -> str:
-    s = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", name)
-    s = re.sub(r"(?<=[a-zA-Z])(?=[0-9])", "_", s)
-    return s.lower()
-
-
-def _clean_ref(ref: str) -> str:
-    """去掉 binding. / viewBinding. 等前缀，得到裸 view_ref"""
-    ref = re.sub(r'^(?:viewBinding|binding|view|this)\s*[\.\?]\s*', '', ref)
-    return ref.strip()
-
-
-def _resolve_view_id(raw_ref: str, elements: dict,
-                     file_ref_map: dict | None = None) -> str:
-    if not raw_ref:
-        return ""
-    if raw_ref in elements:
-        return raw_ref
-    snake = _camel_to_snake(raw_ref)
-    if snake != raw_ref and snake in elements:
-        return snake
-    if file_ref_map:
-        mapped_id = file_ref_map.get(raw_ref, "")
-        if mapped_id and mapped_id in elements:
-            return mapped_id
-    return ""
+from .view_ref_utils import camel_to_snake as _camel_to_snake
+from .view_ref_utils import clean_view_ref as _clean_ref
+from .view_ref_utils import resolve_view_id as _resolve_view_id
 
 
 def build(xml_result: dict, source_result: dict, *,
