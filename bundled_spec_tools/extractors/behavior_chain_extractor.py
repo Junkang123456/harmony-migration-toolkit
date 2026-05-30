@@ -575,7 +575,8 @@ def extract_handler_body(source_lines: list[str], reg_line: int) -> tuple[str, i
     """Extract the lambda/handler body starting near the registration line.
 
     Returns (body_text, start_line_1based, end_line_1based).
-    Handles single-line `{ openSettings() }` and multi-line lambdas.
+    Handles single-line `{ openSettings() }`, multi-line lambdas,
+    and arrow lambdas without braces (`v -> doSomething()`).
     """
     if reg_line < 1 or reg_line > len(source_lines):
         return "", 0, 0
@@ -585,6 +586,15 @@ def extract_handler_body(source_lines: list[str], reg_line: int) -> tuple[str, i
     joined = "\n".join(source_lines[search_start:search_end])
 
     brace_pos = joined.find("{")
+
+    # Check for arrow lambda without braces on the registration line itself
+    reg_text = source_lines[reg_line - 1]
+    arrow_m = re.search(r'->\s*(.+?)\s*\)\s*;', reg_text)
+    if arrow_m:
+        arrow_body = arrow_m.group(1).strip()
+        if arrow_body and (brace_pos < 0 or joined.find("->") < brace_pos):
+            return arrow_body, reg_line, reg_line
+
     if brace_pos < 0:
         return "", 0, 0
 
