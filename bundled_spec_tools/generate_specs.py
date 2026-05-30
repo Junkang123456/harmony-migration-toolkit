@@ -4,11 +4,41 @@ generate_specs.py
 用法：python generate_specs.py
 """
 import json
+import re
 import sys
 from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+
+def _normalize_layout(name: str) -> str:
+    """Collapse underscores around digits for comparison: media3_video → media3video."""
+    return re.sub(r'_+', '', name)
+
+
+def _dedupe_layout_variants(all_layouts: set[str], known_layouts: set[str]) -> set[str]:
+    """Remove layout names that are snake_case variants of a known XML layout.
+
+    When camelCase→snake_case produces 'media3video_player_activity' but the
+    real XML file is 'media3_video_player_activity', drop the non-existent variant.
+    """
+    by_norm: dict[str, list[str]] = {}
+    for name in all_layouts:
+        norm = _normalize_layout(name)
+        by_norm.setdefault(norm, []).append(name)
+
+    result: set[str] = set()
+    for norm, variants in by_norm.items():
+        if len(variants) == 1:
+            result.add(variants[0])
+            continue
+        in_known = [v for v in variants if v in known_layouts]
+        if in_known:
+            result.add(in_known[0])
+        else:
+            result.add(variants[0])
+    return result
 
 
 def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
@@ -88,6 +118,12 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         | set(class_to_layout.values())
         | nav_layouts
     )
+
+    # ── 7b. 去重：合并仅因 snake_case 转换差异（数字边界等）产生的变体 ──
+    known_layouts = set(by_layout.keys())
+    if layout_trees:
+        known_layouts |= set(layout_trees.keys())
+    all_layouts = _dedupe_layout_variants(all_layouts, known_layouts)
 
     # ── 8. 为每个 layout 生成 spec ──
     generated = 0
