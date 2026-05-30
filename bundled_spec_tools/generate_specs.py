@@ -17,6 +17,37 @@ def _normalize_layout(name: str) -> str:
     return re.sub(r'_+', '', name)
 
 
+_SUMMARY_STEP_TYPES = frozenset({"navigate", "ui_feedback", "ui_update", "async"})
+
+
+def _summarize_effects(steps: list[dict]) -> list[str]:
+    """Flatten a nested effect_chain into deduplicated summary tags.
+
+    Returns e.g. ["navigate:finish", "ui_feedback:Toast", "ui_update:setVisibility"].
+    Skips generic 'call' and 'condition' steps — they don't carry translation-relevant info.
+    """
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def walk(slist: list[dict]) -> None:
+        for s in slist:
+            st = s.get("step", "")
+            if st in _SUMMARY_STEP_TYPES:
+                detail = s.get("target") or s.get("action") or s.get("destination") or s.get("via") or ""
+                detail = detail.rstrip("()")
+                tag = f"{st}:{detail}" if detail else st
+                if tag not in seen:
+                    seen.add(tag)
+                    tags.append(tag)
+            for key in ("nested", "then", "else"):
+                child = s.get(key)
+                if child and isinstance(child, list):
+                    walk(child)
+
+    walk(steps)
+    return tags
+
+
 def _dedupe_layout_variants(all_layouts: set[str], known_layouts: set[str]) -> set[str]:
     """Remove layout names that are snake_case variants of a known XML layout.
 
@@ -313,11 +344,13 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                 for bc in behavior_chains:
                     eid = bc.get("element_id", "")
                     if eid in all_ids or (class_name and bc.get("handler", {}).get("file", "").replace("\\", "/").find(class_name) >= 0):
+                        chain = bc.get("effect_chain", [])
                         event_bindings.append({
                             "element_id": eid,
                             "event_type": bc.get("event_type", ""),
                             "handler_method": bc.get("handler", {}).get("method", ""),
-                            "effect_chain": bc.get("effect_chain", []),
+                            "effect_chain": chain,
+                            "effect_summary": _summarize_effects(chain),
                             "chain_depth": bc.get("chain_depth", 0),
                         })
 
