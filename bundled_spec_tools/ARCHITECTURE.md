@@ -413,42 +413,46 @@ Main > Nav Drawer > Subscription
 
 只提取 `navigate`、`ui_feedback`、`ui_update`、`async` 四类，跳过通用 `call` 和 `condition`。
 
-### 5.4 Spec Schema（v2.0）
+### 5.4 Spec Schema（v2.1）
+
+渐进式披露设计：`brief` 供 LLM 快速了解页面，`L0/L1` 供深入翻译时使用。
 
 ```json
 {
-  // ── v1 字段（向后兼容） ──
-  "screen_id": "activity_main",
+  "spec_version": "2.1",
   "class": "MainActivity",
   "layout": "activity_main",
   "screen_type": "activity|fragment|dialog|adapter_item|unknown",
   "source": "project|library",
 
+  // ── Layer 1 摘要（LLM 优先读取） ──
+  "brief": {
+    "interactive_controls": [
+      {"id": "btnSave", "type": "Button", "label": "Save",
+       "actions": ["navigate:finish", "ui_feedback:Toast"]}
+    ],
+    "nav_in": ["SplashActivity (activity)"],
+    "nav_out": ["→ SettingsActivity (menu settings)"],
+    "has_fragments": true,
+    "has_adapters": false,
+    "lifecycle_methods": ["onCreate", "onResume"]
+  },
+
+  // ── 控件列表（扁平） ──
   "ui_elements": [{
     "id": "btnSave",
     "type": "Button",
     "label": "Save",
     "visibility": "always|conditional",
     "condition": "if (isLoggedIn) {",
-    "is_interactive": true,
-    "behaviors": [{"event": "click", "method": "onSave", "file": "...", "line": 42}]
-  }],
-
-  "behaviors": [{
-    "trigger": "click on btnSave",
-    "element_id": "btnSave",
-    "action": "onSave",
-    "outcome": "public void onSave(View v) {",
-    "file": "..."
+    "is_interactive": true
   }],
 
   "dynamic_ui": [{
     "source": "inflate_layout|inflate_binding",
     "layout": "activity_main",
     "enclosing_fn": "...",
-    "file": "...",
-    "options": ["Option A", "Option B"],      // 仅 data_driven_ui
-    "items_source": "..."                     // 仅 data_driven_ui
+    "file": "..."
   }],
 
   "navigation": {
@@ -459,9 +463,6 @@ Main > Nav Drawer > Subscription
   },
 
   "stats": {
-    "total_elements": 15,
-    "interactive": 8,
-    "with_behavior": 6,
     "conditional_visibility": 2,
     "dynamic_gaps": 1,
     "nav_out": 3,
@@ -472,66 +473,71 @@ Main > Nav Drawer > Subscription
     "event_bindings_with_chain": 5
   },
 
-  // ── v2 扩展 ──
-  "spec_version": "2.0",
-
+  // ── Layer 2 详情（按需读取） ──
   "L0_structure": {
-    "ui_tree": {                       // 完整的 XML 控件树（保留嵌套）
-      "tag": "LinearLayout", "id": "", "children": [
-        {"tag": "Button", "id": "btnSave", "text": "Save", ...}
-      ]
-    },
-    "fragments": [{                    // 该屏幕挂载的 Fragment
-      "class": "SettingsFragment",
-      "container_id": "fragment_container",
-      "attach_method": "FragmentTransaction.replace"
-    }],
-    "dynamic_elements": [{             // 程序化创建的控件（addView）
-      "view_type": "TextView",
-      "creation_method": "addView",
-      "container_id": "dynamicContainer",
-      "properties": {}
-    }]
+    "ui_tree": {"tag": "LinearLayout", "id": "", "children": [...]},
+    "fragments": [{"class": "SettingsFragment", "container_id": "fragment_container",
+                   "attach_method": "FragmentTransaction.replace"}],
+    "dynamic_elements": [{"view_type": "TextView", "creation_method": "addView",
+                          "container_id": "dynamicContainer", "properties": {}}]
   },
 
   "L1_behavior": {
-    "event_bindings": [{               // 完整的事件→效果链
+    "event_bindings": [{
       "element_id": "btnSave",
       "event_type": "click",
       "handler_method": "onCreate",
-      "effect_chain": [
-        {"step": "navigate", "target": "finish"},
-        {"step": "ui_feedback", "action": "Toast"}
-      ],
+      "effect_chain": [{"step": "navigate", "target": "finish"},
+                       {"step": "ui_feedback", "action": "Toast"}],
       "effect_summary": ["navigate:finish", "ui_feedback:Toast"],
       "chain_depth": 2
     }],
-    "lifecycle_hooks": {               // 生命周期方法调用
-      "onCreate": ["getSharedPreferences", "setContentView"],
-      "onResume": ["refreshData"]
-    },
-    "adapter_bindings": [{             // Adapter 绑定
-      "container_id": "recyclerView",
-      "adapter_class": "MyAdapter",
-      "item_layout": "item_row"
-    }]
+    "lifecycle_hooks": {"onCreate": ["initView"], "onResume": ["refreshData"]},
+    "adapter_bindings": [{"container_id": "recyclerView", "adapter_class": "MyAdapter",
+                          "item_layout": "item_row"}]
   }
 }
 ```
 
-### 5.5 v1 与 v2 字段关系
+v2.1 相比 v2.0 的变化：
+- **新增** `brief` — LLM 友好的摘要层
+- **删除** `behaviors`（顶层）— 被 `L1_behavior.event_bindings` 替代
+- **删除** `ui_elements[].behaviors` — 同上
+- **删除** `screen_id` — 与 `layout` 完全重复
+- **删除** `stats.total_elements`/`interactive`/`with_behavior` — 可从 `ui_elements` 数组直接推导
 
-| 概念 | v1 字段 | v2 字段 | 关系 |
-|------|---------|---------|------|
-| 控件列表 | `ui_elements` | `L0_structure.ui_tree` | v1 是扁平列表，v2 保留树结构 |
-| 控件行为 | `ui_elements[].behaviors` | `L1_behavior.event_bindings` | v2 多了 effect_chain 调用链和 effect_summary |
-| 屏幕行为 | `behaviors` | `L1_behavior.event_bindings` | v1 按 trigger 聚合，v2 按 element_id + event_type |
-| 动态布局 | `dynamic_ui` | `L0_structure.dynamic_elements` | **互补**：v1=inflate 模式，v2=addView 模式 |
-| Fragment | — | `L0_structure.fragments` | v2 新增 |
-| 生命周期 | — | `L1_behavior.lifecycle_hooks` | v2 新增 |
-| Adapter | — | `L1_behavior.adapter_bindings` | v2 新增 |
+### 5.5 screen_index.json — 全局索引
 
-> v1 字段保留用于向后兼容，后续可被 v2 字段替代。
+`generate_specs` 完成后自动生成 `screen_index.json`，LLM 读此一个文件即可了解 App 全貌：
+
+```json
+{
+  "total_screens": 177,
+  "screens": [
+    {
+      "layout": "activity_main",
+      "class": "MainActivity",
+      "type": "activity",
+      "controls": 15,
+      "interactive": 8,
+      "event_bindings": 12,
+      "nav_in": ["SplashActivity (activity)"],
+      "nav_out": ["→ SettingsActivity (menu settings)"],
+      "tags": ["navigate:startActivity", "ui_feedback:Snackbar"],
+      "spec_file": "activity_main_spec.json"
+    }
+  ]
+}
+```
+
+### 5.6 渐进式披露工作流
+
+```
+LLM 翻译工作流：
+  1. 读 screen_index.json    → 了解 App 全貌，规划 feature 分组
+  2. 读 spec.brief           → 了解单页面概览：控件 + 行为标签 + 导航
+  3. 读 spec.L0/L1           → 翻译时获取完整 effect_chain 和 ui_tree
+```
 
 ---
 
@@ -556,6 +562,7 @@ Main > Nav Drawer > Subscription
 | `ui_paths_enumerated.json` | 3KB | 枚举路径（上限 800） |
 | `ui_effect_paths.json` | 320B | 效果路径 |
 | `specs/*.json` | 1.5MB 共 177 个 | 每屏幕 migration spec |
+| `screen_index.json` | ~50KB | 全局屏幕索引（LLM 概览） |
 | `app_model/` | ~1MB | 分层 App 模型 |
 | `verification_report.json` | — | 交叉验证报告（--validate） |
 
@@ -632,3 +639,4 @@ transaction.replace(R.id.container, fragment)
 | 2026-05-30 | 支持箭头 lambda（`v -> expr()`）的 handler body 提取 | 984a95f |
 | 2026-05-30 | 扩展 findViewById 映射正则以支持 Java 字段赋值 | c5ee72e |
 | 2026-05-30 | 去重 lifecycle_hooks 中重复的 callee 方法名 | 04d7ecd |
+| 2026-05-30 | Spec v2.1：删除冗余 v1 字段，新增 brief 摘要层，生成 screen_index.json | e8ed2ae, 148d121, 3ccd7d8 |
