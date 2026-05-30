@@ -187,6 +187,10 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         # ui_elements
         ui_elements = []
         for e in elements:
+            elem_behaviors = e.get("behaviors", [])
+            if class_name:
+                elem_behaviors = [b for b in elem_behaviors
+                                  if b.get("file", "").replace("\\", "/").find(class_name) >= 0]
             ui_elements.append({
                 "id": e.get("id", ""),
                 "type": e.get("tag", ""),
@@ -204,14 +208,18 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                         "file": b.get("file", ""),
                         "line": b.get("line", 0),
                     }
-                    for b in e.get("behaviors", [])
+                    for b in elem_behaviors
                 ],
             })
 
         # behaviors (from ground truth bindings)
         behaviors = []
         for e in elements:
-            for b in e.get("behaviors", []):
+            elem_behaviors = e.get("behaviors", [])
+            if class_name:
+                elem_behaviors = [b for b in elem_behaviors
+                                  if b.get("file", "").replace("\\", "/").find(class_name) >= 0]
+            for b in elem_behaviors:
                 behaviors.append({
                     "trigger": f"{b.get('event', 'interaction')} on {e.get('id', '')}",
                     "element_id": e.get("id", ""),
@@ -290,7 +298,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             "stats": {
                 "total_elements": len(elements),
                 "interactive": sum(1 for e in elements if e.get("is_interactive")),
-                "with_behavior": sum(1 for e in elements if e.get("behaviors")),
+                "with_behavior": sum(1 for e in ui_elements if e.get("behaviors")),
                 "conditional_visibility": sum(1 for e in elements if e.get("conditional_visibility")),
                 "dynamic_gaps": len(gaps),
                 "nav_out": len(nav_out),
