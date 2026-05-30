@@ -187,10 +187,6 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         # ui_elements
         ui_elements = []
         for e in elements:
-            elem_behaviors = e.get("behaviors", [])
-            if class_name:
-                elem_behaviors = [b for b in elem_behaviors
-                                  if b.get("file", "").replace("\\", "/").find(class_name) >= 0]
             ui_elements.append({
                 "id": e.get("id", ""),
                 "type": e.get("tag", ""),
@@ -201,32 +197,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                     for vc in e.get("visibility_conditions", [])
                 ),
                 "is_interactive": e.get("is_interactive", False),
-                "behaviors": [
-                    {
-                        "event": b.get("event", ""),
-                        "method": b.get("method", b.get("handler", "")),
-                        "file": b.get("file", ""),
-                        "line": b.get("line", 0),
-                    }
-                    for b in elem_behaviors
-                ],
             })
-
-        # behaviors (from ground truth bindings)
-        behaviors = []
-        for e in elements:
-            elem_behaviors = e.get("behaviors", [])
-            if class_name:
-                elem_behaviors = [b for b in elem_behaviors
-                                  if b.get("file", "").replace("\\", "/").find(class_name) >= 0]
-            for b in elem_behaviors:
-                behaviors.append({
-                    "trigger": f"{b.get('event', 'interaction')} on {e.get('id', '')}",
-                    "element_id": e.get("id", ""),
-                    "action": b.get("method", b.get("handler", "")),
-                    "outcome": b.get("enclosing_fn", ""),
-                    "file": b.get("file", ""),
-                })
 
         # dynamic_ui (from gaps)
         dynamic_ui = []
@@ -281,7 +252,6 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             screen_type = "adapter_item"
 
         spec = {
-            "screen_id": layout_name,
             "class": class_name,
             "layout": layout_name,
             "screen_type": screen_type,
@@ -289,16 +259,12 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                 e.get("source", "").startswith("library_") for e in elements
             ) else "project",
             "ui_elements": ui_elements,
-            "behaviors": behaviors,
             "dynamic_ui": dynamic_ui,
             "navigation": {
                 "entry_points": entry_points,
                 "exit_points": navigation,
             },
             "stats": {
-                "total_elements": len(elements),
-                "interactive": sum(1 for e in elements if e.get("is_interactive")),
-                "with_behavior": sum(1 for e in ui_elements if e.get("behaviors")),
                 "conditional_visibility": sum(1 for e in elements if e.get("conditional_visibility")),
                 "dynamic_gaps": len(gaps),
                 "nav_out": len(nav_out),
