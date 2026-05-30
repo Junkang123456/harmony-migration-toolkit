@@ -86,12 +86,12 @@ def extract_braced_block(text: str, brace_pos: int) -> tuple[str, int]:
 
 
 def get_child_calls_from_graph(sym_id: str, calls_by_from: dict[str, list[dict]]) -> list[str]:
-    """Return callee names for a given symbol from the call graph."""
-    return [
+    """Return deduplicated callee names for a given symbol from the call graph."""
+    return list(dict.fromkeys(
         c.get("callee_name", "")
         for c in calls_by_from.get(sym_id, [])
         if c.get("callee_name")
-    ]
+    ))
 
 
 def resolve_symbol(
