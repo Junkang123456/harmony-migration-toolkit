@@ -72,6 +72,37 @@ def _dedupe_layout_variants(all_layouts: set[str], known_layouts: set[str]) -> s
     return result
 
 
+def _build_brief(ui_elements, event_bindings, nav_out_edges, nav_in_edges,
+                 screen_fragments, screen_adapters, screen_lifecycle):
+    """Build a concise LLM-friendly summary from v2 data."""
+    eb_by_id: dict[str, list[str]] = {}
+    for eb in event_bindings:
+        eid = eb.get("element_id", "")
+        if eid:
+            eb_by_id.setdefault(eid, []).extend(eb.get("effect_summary", []))
+
+    controls = []
+    for e in ui_elements:
+        eid = e.get("id", "")
+        actions = list(dict.fromkeys(eb_by_id.get(eid, [])))
+        if e.get("is_interactive") or actions:
+            controls.append({
+                "id": eid,
+                "type": e.get("type", ""),
+                "label": e.get("label", ""),
+                "actions": actions,
+            })
+
+    return {
+        "interactive_controls": controls,
+        "nav_in": [f"{ep['from']} ({ep['type']})" for ep in nav_in_edges],
+        "nav_out": [f"→ {ep['destination']} ({ep['trigger']})" for ep in nav_out_edges],
+        "has_fragments": len(screen_fragments) > 0,
+        "has_adapters": len(screen_adapters) > 0,
+        "lifecycle_methods": list(screen_lifecycle.keys()) if screen_lifecycle else [],
+    }
+
+
 def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                        layout_trees=None, fragments=None,
                        dynamic_elements=None, behavior_chains=None,
@@ -274,7 +305,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
 
         # ── v2 extensions ──
         if spec_version >= "2.0":
-            spec["spec_version"] = spec_version
+            spec["spec_version"] = "2.1"
 
             # L0_structure
             ui_tree = None
@@ -359,6 +390,11 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             spec["stats"]["event_bindings"] = len(event_bindings)
             spec["stats"]["event_bindings_with_chain"] = sum(
                 1 for eb in event_bindings if eb.get("effect_chain")
+            )
+
+            spec["brief"] = _build_brief(
+                ui_elements, event_bindings, navigation, entry_points,
+                screen_fragments, screen_adapters, screen_lifecycle,
             )
 
         out_path = specs_dir / f"{layout_name}_spec.json"
