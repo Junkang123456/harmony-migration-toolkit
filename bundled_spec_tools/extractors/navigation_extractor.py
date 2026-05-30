@@ -142,7 +142,7 @@ def _find_layout_for_class(class_name: str) -> str:
 
 
 def _is_dialog_class(class_name: str) -> bool:
-    return "Dialog" in class_name or "BottomSheet" in class_name
+    return bool(class_name) and class_name[0].isupper() and ("Dialog" in class_name or "BottomSheet" in class_name)
 
 
 def _is_activity_class(class_name: str) -> bool:

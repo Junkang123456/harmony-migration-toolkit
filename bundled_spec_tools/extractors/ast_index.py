@@ -261,7 +261,7 @@ def _extract_target_class(text: str) -> str:
 
 
 def _is_dialog_like(name: str) -> bool:
-    return bool(re.search(r"(Dialog|DialogFragment|BottomSheet)$", name))
+    return bool(name and name[0].isupper() and re.search(r"(Dialog|DialogFragment|BottomSheet)$", name))
 
 
 @dataclass
