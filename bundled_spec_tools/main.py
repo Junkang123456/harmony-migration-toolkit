@@ -277,7 +277,9 @@ def main():
 
     # Step 4d: 行为链提取
     print("\n[4d] Extracting behavior chains...")
-    bc_result = behavior_chain_extractor.run(src_result, call_graph_payload, project_root)
+    all_xml_ids = {e["id"] for e in xml_result["elements"] if e.get("id")}
+    bc_result = behavior_chain_extractor.run(src_result, call_graph_payload, project_root,
+                                              xml_ids=all_xml_ids)
     (out_dir / "behavior_chains.json").write_text(
         json.dumps(bc_result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -484,6 +486,8 @@ def main():
                        fragments=frag_result.get("fragments"),
                        dynamic_elements=dyn_result.get("dynamic_elements"),
                        behavior_chains=bc_result.get("behavior_chains"),
+                       lifecycle_hooks=bc_result.get("lifecycle_hooks"),
+                       adapter_layouts=dyn_result.get("adapter_layouts"),
                        spec_version="2.0")
 
     generated = len(list(specs_dir.glob("*_spec.json")))
