@@ -75,7 +75,7 @@ function_graph ────┤                         │
 - 判断控件是否可交互（Button/EditText/SeekBar 等天然可交互；TextView/ImageView 仅在有 `clickable=true` 或 `onClick` 时才算）
 - 检测 `visibility="gone"/"invisible"` 的初始隐藏控件
 - 提取 `onClick` XML 属性绑定
-- **构建 `layout_trees`**：每个布局文件的完整控件树（保留嵌套层级），供 v2 spec 的 `L0_structure.ui_tree` 使用
+- **构建 `layout_trees`**：每个布局文件的完整控件树（保留嵌套层级），供 v2 spec 的 `ui.tree` 使用
 - 合并字符串资源 `res/values/strings.xml` 到 `strings` 字段
 
 **关键数据结构**：
@@ -101,7 +101,12 @@ function_graph ────┤                         │
 
 功能（5 个核心语义模式）：
 1. **R.id 分发块**（`id_dispatchers`）：when/switch 中 `R.id.xxx → handler` 的分发映射
-2. **事件注册**（`event_registrations`）：`setOnClickListener`、`addTextChangedListener` 等监听器注册，提取 `view_ref`（如 `binding.btnSave`）、`event_type`（click/touch/text_change 等）、`method`、`enclosing_fn`
+2. **事件注册**（`event_registrations`）：三种检测模式覆盖主流 Android 事件绑定写法：
+   - `binding.xxx.setOnClickListener(` — ViewBinding 直接引用
+   - `findViewById(R.id.xxx).setOnClickListener(` — 链式调用（锚定 `R.id.` 编译期常量）
+   - `var = yyy.findViewById(R.id.xxx)` → `var.setOnClickListener(` — 局部变量追踪
+   
+   提取 `view_ref`、`event_type`（click/touch/text_change 等）、`method`、`enclosing_fn`。过滤 `remove*`（移除监听）、`(null)`（清除监听）、PendingIntent（标记 `is_pending_intent`）。
 3. **可见性控制**（`visibility_controls`）：`setVisibility(View.GONE)`、`isVisible = false` 等
 4. **布局膨胀**（`inflates`）：`inflate(R.layout.xxx)` 和 `XxxBinding.inflate()`
 5. **数据驱动 UI**（`data_driven_ui`）：构建选项列表后传入弹窗/列表的静态文本
@@ -235,15 +240,15 @@ function_graph ────┤                         │
 **输出**：
 ```json
 {
-  "dynamic_elements": [...],    // addView 创建的控件（v2 L0_structure.dynamic_elements）
-  "adapter_layouts": [          // Adapter 绑定关系（v2 L1_behavior.adapter_bindings）
+  "dynamic_elements": [...],    // addView 创建的控件（v2 ui.programmatic_views）
+  "adapter_layouts": [          // Adapter 绑定关系（v2 behavior.adapter_bindings）
     {"adapter_class": "QueueRecyclerAdapter", "item_layout": "feeditemlist_item",
      "host_class": "QueueFragment", "host_id": "recyclerView"}
   ]
 }
 ```
 
-> **注意**：v1 spec 的 `dynamic_ui` 字段来自 ground_truth_builder 的 `dynamic_gap`（inflate 模式），与此处的 `dynamic_elements`（addView 模式）是**互补关系**，不是重复。
+> **注意**：v1 spec 的 `ui.inflated_layouts` 字段来自 ground_truth_builder 的 `dynamic_gap`（inflate 模式），与此处的 `dynamic_elements`（addView 模式）是**互补关系**，不是重复。
 
 ### 4.9 行为链提取 — `extractors/behavior_chain_extractor.py`
 
@@ -265,6 +270,13 @@ function_graph ────┤                         │
   - 方法引用 `this::onClick` 回退
 - `split_conditions(body)` → 检测 if/when/switch 分支
 - `extract_braced_block(text, pos)` → 大括号匹配
+- `_extract_calls_from_body(body, include_members)` → 提取方法调用名。**直接 handler body** 用 `include_members=True` 捕获成员调用（`view.setText(...)`、`launcher.launch(...)`）；调用图深层递归保持非限定调用，避免外部库叶子调用淹没链路。
+- `_extract_property_mutations(body)` → 检测 Kotlin/Android 属性式 UI 变更（`view.isVisible = false`、`label.text = ...`），映射为对应的 `ui_update` step（setVisibility/setText/...）。通用，不针对单一仓。
+
+**registration callback metadata**（来自 `source_extractor`）：
+- `callback_kind`：`lambda | method_ref | anonymous_listener | callback_var | unknown`
+- `callback_ref`：方法引用或 callback 变量名（如能识别）
+- `registration_snippet`：注册点附近的短文本，供 handler 恢复复用
 
 **Layer 3 — Specialized Extractors**：
 - `extract_event_chains(event_registrations, call_graph, project_root, xml_ids)` → 为每个事件注册构建完整的 event → handler → effect 链
@@ -284,15 +296,23 @@ function_graph ────┤                         │
 {
   "element_id": "butSave",
   "event_type": "click",
-  "handler": {"method": "onCreate", "file": "...", "line": 42},
+  "handler": {"method": "onCreate", "class": "MainActivity", "file": "...", "line": 42},
   "effect_chain": [
     {"step": "navigate", "target": "finish", "destination": ""},
     {"step": "ui_update", "action": "setVisibility", "value": "gone"},
     {"step": "condition", "expr": "isValid()", "then": [...], "else": [...]}
   ],
-  "chain_depth": 3
+  "chain_depth": 3,
+  "confidence": "static_analysis",
+  "handler_resolution": {"strategy": "inline_lambda", "fallback_used": false}
 }
 ```
+
+`confidence` 直接复用行为链自身的置信度区分来源：
+- `static_analysis`：从明确 handler body 构建出的确定链
+- `fallback_analysis` / `inferred` / 其他非 `static_analysis`：推断链
+
+`behavior_chains.json.stats.by_confidence` 会聚合各 `confidence` 的数量，终端 `[4d]` 报告也基于这个字段输出确定类/推断类数量。
 
 步骤类型：
 | step | 含义 | 关键字段 |
@@ -304,7 +324,12 @@ function_graph ────┤                         │
 | `call` | 普通方法调用 | `target`, `symbol_id`, `nested` |
 | `condition` | 条件分支 | `expr`, `then`, `else` |
 
-### 4.10 共享工具 — `extractors/view_ref_utils.py`
+**共享未绑定控件推断**（`extractors/unbound_control_inference.py`）：
+- `build_layout_contexts(nav, adapter_layouts)`：一次构建 layout → owner/dialog/adapter 上下文，供 ground truth 与 spec 复用
+- `infer_unbound_event_bindings(static_elements, layout_contexts)`：为无 listener 的 interactive controls 生成低置信度 `inferred_event_bindings`
+- 推断 binding 复用既有 `confidence` 字段，统一标为 `inferred`
+- 每条推断 binding 都带 `claim_hints`（如 `owner_classes` / `screen_types` / `adapter_classes`），给后续 orphan chain claiming 直接复用
+
 
 被 `ground_truth_builder` 和 `behavior_chain_extractor` 共同使用的 view 引用解析工具：
 
@@ -396,7 +421,7 @@ Main > Nav Drawer > Subscription
 2. 从 `navigation_graph.class_layouts` 反查 layout → class 映射
 3. 查找该 class 的导航出边和入边
 4. 按 class_name 过滤 v1 behaviors（防止同名 id 跨文件污染）
-5. 合并 fragments、dynamic_elements、behavior_chains、lifecycle_hooks、adapter_layouts
+5. 合并 fragments、programmatic_views、behavior_chains、lifecycle_hooks、adapter_layouts
 6. 写入 spec 文件
 
 ### 5.2 布局去重
@@ -413,19 +438,18 @@ Main > Nav Drawer > Subscription
 
 只提取 `navigate`、`ui_feedback`、`ui_update`、`async` 四类，跳过通用 `call` 和 `condition`。
 
-### 5.4 Spec Schema（v2.1）
+### 5.4 Spec Schema（v2.2）
 
-渐进式披露设计：`brief` 供 LLM 快速了解页面，`L0/L1` 供深入翻译时使用。
+渐进式披露设计：`brief` 供 LLM 快速了解页面，`ui`/`behavior` 供深入翻译时使用。
 
 ```json
 {
-  "spec_version": "2.1",
   "class": "MainActivity",
   "layout": "activity_main",
   "screen_type": "activity|fragment|dialog|adapter_item|unknown",
   "source": "project|library",
 
-  // ── Layer 1 摘要（LLM 优先读取） ──
+  // ── 摘要（LLM 优先读取） ──
   "brief": {
     "interactive_controls": [
       {"id": "btnSave", "type": "Button", "label": "Save",
@@ -438,23 +462,7 @@ Main > Nav Drawer > Subscription
     "lifecycle_methods": ["onCreate", "onResume"]
   },
 
-  // ── 控件列表（扁平） ──
-  "ui_elements": [{
-    "id": "btnSave",
-    "type": "Button",
-    "label": "Save",
-    "visibility": "always|conditional",
-    "condition": "if (isLoggedIn) {",
-    "is_interactive": true
-  }],
-
-  "dynamic_ui": [{
-    "source": "inflate_layout|inflate_binding",
-    "layout": "activity_main",
-    "enclosing_fn": "...",
-    "file": "..."
-  }],
-
+  // ── 导航（完整出入口） ──
   "navigation": {
     "entry_points": [{"from": "SplashActivity", "trigger": "fn: onCreate", "type": "activity"}],
     "exit_points": [{"trigger": "menu settings", "destination": "SettingsActivity",
@@ -462,27 +470,37 @@ Main > Nav Drawer > Subscription
                      "via": "startActivity"}]
   },
 
-  "stats": {
-    "conditional_visibility": 2,
-    "dynamic_gaps": 1,
-    "nav_out": 3,
-    "nav_in": 2,
-    "fragments": 1,
-    "dynamic_elements": 0,
-    "event_bindings": 12,
-    "event_bindings_with_chain": 5
+  // ── UI（元素 + 布局树 + 动态加载） ──
+  "ui": {
+    "elements": [{
+      "id": "btnSave",
+      "type": "Button",
+      "label": "Save",
+      "visibility": "always|conditional",
+      "condition": "if (isLoggedIn) {",
+      "is_interactive": true
+    },
+    {
+      "id": "includeRadio",
+      "type": "RadioButton",
+      "label": "Include only...",
+      "visibility": "always",
+      "condition": "",
+      "is_interactive": true
+    }],
+    "tree": {"tag": "LinearLayout", "id": "", "children": [...]},
+    "inflated_layouts": [{
+      "source": "inflate_layout|inflate_binding",
+      "layout": "activity_main",
+      "enclosing_fn": "...",
+      "file": "..."
+    }],
+    "programmatic_views": [{"view_type": "TextView", "creation_method": "addView",
+                            "container_id": "dynamicContainer", "properties": {}}]
   },
 
-  // ── Layer 2 详情（按需读取） ──
-  "L0_structure": {
-    "ui_tree": {"tag": "LinearLayout", "id": "", "children": [...]},
-    "fragments": [{"class": "SettingsFragment", "container_id": "fragment_container",
-                   "attach_method": "FragmentTransaction.replace"}],
-    "dynamic_elements": [{"view_type": "TextView", "creation_method": "addView",
-                          "container_id": "dynamicContainer", "properties": {}}]
-  },
-
-  "L1_behavior": {
+  // ── 行为（事件 + 生命周期 + fragment + adapter） ──
+  "behavior": {
     "event_bindings": [{
       "element_id": "btnSave",
       "event_type": "click",
@@ -491,20 +509,63 @@ Main > Nav Drawer > Subscription
                        {"step": "ui_feedback", "action": "Toast"}],
       "effect_summary": ["navigate:finish", "ui_feedback:Toast"],
       "chain_depth": 2
+    }, {
+      // 合成 event_binding：dialog 中值输入控件，无独立 listener
+      "element_id": "includeRadio",
+      "event_type": "value_change",
+      "handler_method": "onPositiveClick",
+      "effect_chain": [],
+      "effect_summary": ["value_read:on_dialog_confirm"],
+      "chain_depth": 0
+    }, {
+      // 合成 event_binding：adapter item 内控件，handler 在 adapter 类
+      "element_id": "btnPlayItem",
+      "event_type": "click",
+      "handler_method": "onBindViewHolder",
+      "effect_chain": [],
+      "effect_summary": ["adapter_bindview:EpisodeAdapter.onBindViewHolder"],
+      "chain_depth": 0
     }],
     "lifecycle_hooks": {"onCreate": ["initView"], "onResume": ["refreshData"]},
+    "fragments": [{"class": "SettingsFragment", "container_id": "fragment_container",
+                   "attach_method": "FragmentTransaction.replace"}],
     "adapter_bindings": [{"container_id": "recyclerView", "adapter_class": "MyAdapter",
                           "item_layout": "item_row"}]
+  },
+
+  "stats": {
+    "conditional_visibility": 2,
+    "inflated_layouts": 1,
+    "nav_out": 3,
+    "nav_in": 2,
+    "fragments": 1,
+    "programmatic_views": 0,
+    "event_bindings": 12,
+    "event_bindings_with_chain": 5
   }
 }
 ```
 
-v2.1 相比 v2.0 的变化：
-- **新增** `brief` — LLM 友好的摘要层
-- **删除** `behaviors`（顶层）— 被 `L1_behavior.event_bindings` 替代
-- **删除** `ui_elements[].behaviors` — 同上
-- **删除** `screen_id` — 与 `layout` 完全重复
-- **删除** `stats.total_elements`/`interactive`/`with_behavior` — 可从 `ui_elements` 数组直接推导
+v2.2 相比 v2.1 的变化：
+- **合并** `ui_elements`（顶层）+ `structure.ui_tree` + `dynamic_ui` + `structure.dynamic_elements` → `ui` 下四个子字段
+  - `ui.elements` — 扁平控件列表
+  - `ui.tree` — XML 布局树
+  - `ui.inflated_layouts` — inflate 加载的布局（原 `dynamic_ui`）
+  - `ui.programmatic_views` — 代码创建的 View（原 `structure.dynamic_elements`）
+- **移动** `structure.fragments` → `behavior.fragments`（fragment 挂载是运行时行为）
+- **删除** `structure` 外壳 — 内容分散到 `ui` 和 `behavior`
+- **前移** `navigation` — 紧跟 `brief` 之后，LLM 更早获得上下文
+- **stats 键名同步** — `dynamic_gaps` → `inflated_layouts`，`dynamic_elements` → `programmatic_views`
+- **字段排序** — 身份 → 摘要 → 导航 → UI → 行为 → 统计
+- **新增** 合成 event_binding — interactive 控件无 listener 时自动生成 event_binding，按场景分类：
+  - `value_read:on_dialog_confirm` — dialog 内的值输入控件（CheckBox/EditText/Spinner），值在确认按钮 handler 中被读取
+  - `ui_feedback:dismiss_dialog` — dialog 内的 Button（通常是取消/关闭）
+  - `adapter_bindview:{Adapter}.onBindViewHolder` — item 布局控件，handler 在 adapter 的 onBindViewHolder 中
+  - `framework:TabLayout.setupWithViewPager` 等 — 框架托管控件（TabLayout/ViewPager/RecyclerView/ScrollView）
+  - `programmatic:handler_in_code` — 兜底，handler 存在但静态分析无法追踪
+- **新增** 链式 `findViewById(R.id.xxx).setOnXxxListener(` 检测 — 提升事件注册覆盖率
+- **新增** 局部变量→R.id 追踪 — `var = yyy.findViewById(R.id.xxx)` 后 `var.setOnXxxListener`
+- **过滤** `remove*` 调用、`setXxxListener(null)`、PendingIntent 标记（`is_pending_intent`）
 
 ### 5.5 screen_index.json — 全局索引
 
@@ -534,9 +595,9 @@ v2.1 相比 v2.0 的变化：
 
 ```
 LLM 翻译工作流：
-  1. 读 screen_index.json    → 了解 App 全貌，规划 feature 分组
+  1. 读 screen_index.json   → 了解 App 全貌，规划 feature 分组
   2. 读 spec.brief           → 了解单页面概览：控件 + 行为标签 + 导航
-  3. 读 spec.L0/L1           → 翻译时获取完整 effect_chain 和 ui_tree
+  3. 读 spec.ui/behavior     → 翻译时获取完整 ui_tree、effect_chain、fragments
 ```
 
 ---
@@ -602,8 +663,38 @@ transaction.replace(R.id.container, fragment)
 3. 对每个被调用方法，分类为 navigate/ui_feedback/ui_update/async/call
 4. 如果是 call，递归展开（最多 3 层），生成嵌套的 `nested` 字段
 5. 检测 handler 体中的 if/when 分支，生成 `condition` 步骤
+6. handler body 恢复按分层策略执行：inline lambda → method reference → callback variable → anonymous listener → shallow fallback
 
-### 7.4 Spec 防膨胀
+[4d] 输出除 `Bindings / with chain / no handler` 外，还包含：
+- `Handler resolution`：各恢复策略/失败原因计数
+- `Fallback chain`：无法提取 body 时，基于 enclosing symbol 直接调用图生成的低置信度 chain 数
+
+### 7.4 Behavior chain 分配到 spec
+
+`generate_specs` 将全局 behavior_chains（来自 [4d]）分配到各 screen spec：
+
+匹配条件（四条 OR，优先确定性）：
+1. `element_id ∈ layout_ids` — chain 的目标控件在当前 layout 的 XML 元素集中
+2. `claim_hints.owner_classes ∩ owner_classes` — handler 所在类（含内部类→外部类解析）属于当前 spec 的 owner 集合
+3. `handler_class ∈ layout_to_classes[layout_name]` — 当前 spec 无 class_name，但 handler_class 的 layout 映射到当前 layout
+4. `layout_name ∈ class_to_layout_set[owner_class]` — claim_hints 中任一 owner_class 通过 class→layout 反查匹配到当前 layout（含 adapter_class→item_layout 关联）
+
+注意：条件 2 的 `owner_classes` 由 `_derive_owner_classes()` 生成，`Foo$1` 自动解析为 `[Foo$1, Foo]`，无需推断。`class_to_layout_set` 包含三个确定性数据源：`class_layouts`、nav nodes、`adapter_layouts`（adapter_class→item_layout 和 host_class→item_layout）。
+
+分配结果透明化输出（[7/7]）：
+```
+Binding assignment: 386 chains → 380 assigned, 6 orphan, 12 duplicated
+Fallback claimed: 8 (handler_class→layout)
+Synthetic: 25 (cross-component)
+Total event_bindings in specs: 417
+```
+
+- **orphan**：分配不到任何 spec 的 chain（element_id 解析失败 + handler_class 无 layout 映射）
+- **duplicated**：被多个 spec 收走的 chain（element_id 在多个 layout 中存在，如 include 复用）
+- **synthetic**：无 listener 的 interactive 控件合成的 event_binding（不来自 behavior_chains）
+- **fallback_claimed**：通过 handler_class→layout 反查 fallback 成功认领的 chain 数
+
+### 7.5 Spec 防膨胀
 
 当 `class_name == ""` 时（布局无法映射到具体类），以下三个过滤条件会退化为全量匹配：
 - `"".find("") == 0` 总为 True → 所有 behavior_chains 被塞入 spec
@@ -617,7 +708,8 @@ transaction.replace(R.id.container, fragment)
 
 - **小步提交**：每个功能点单独 commit
 - **复用优先**：共享逻辑提取到 `view_ref_utils.py` 等公共模块
-- **v1 兼容**：v1 spec 字段保留，v2 是增量扩展层
+- **v1 兼容**：v1 冗余字段已删除（behaviors、screen_id），v2 是唯一 schema
+- **字段排序**：spec dict 按渐进式披露顺序构建（身份 → brief → 元素 → 导航 → 结构 → 行为 → 统计）
 - **tree-sitter 可选**：所有使用 AST 的模块在 tree-sitter 不可用时回退到正则
 - **误报抑制**：多层过滤（PascalCase 类型名、系统对象、首字母大写检查等）
 - **产物可审计**：每个中间 JSON 文件独立可读，便于调试
@@ -640,3 +732,14 @@ transaction.replace(R.id.container, fragment)
 | 2026-05-30 | 扩展 findViewById 映射正则以支持 Java 字段赋值 | c5ee72e |
 | 2026-05-30 | 去重 lifecycle_hooks 中重复的 callee 方法名 | 04d7ecd |
 | 2026-05-30 | Spec v2.1：删除冗余 v1 字段，新增 brief 摘要层，生成 screen_index.json | e8ed2ae, 148d121, 3ccd7d8 |
+| 2026-05-30 | 重构 spec 字段：L0_structure→structure、L1_behavior→behavior、删除 spec_version、按渐进式披露排序 | — |
+| 2026-05-30 | Spec v2.2：消除概念重复，合并 ui_elements/dynamic_ui/structure → ui，fragments 移入 behavior，navigation 前移 | — |
+| 2026-06-01 | 事件注册检测增强：链式 findViewById + 局部变量追踪 + 过滤 null/remove/PendingIntent | — |
+| 2026-06-01 | 消除 binding_hint：为未绑定 interactive 控件合成 event_binding（value_read/dialog_action/adapter_bindview/framework/programmatic） | — |
+| 2026-06-02 | Behavior chain 分配对齐：handler_class 匹配减少 orphan，终端输出 assigned/orphan/duplicated/synthetic 统计 | — |
+| 2026-06-02 | Handler 恢复增强：event_registration 增加 callback metadata，支持 method_ref/callback_var/anonymous_listener/fallback_chain 统计 | — |
+| 2026-06-02 | by_confidence 统计：JSON 输出和终端报告区分 static_analysis / fallback_analysis / inferred 三级置信度 | — |
+| 2026-06-03 | 共享未绑定控件推断层：unbound_control_inference.py，ground_truth 产出 inferred_event_bindings，spec 消费 claim_hints | — |
+| 2026-06-03 | Orphan chain fallback claiming：handler_class→layout 反查第四条匹配，终端输出 fallback_claimed 统计 | — |
+| 2026-06-03 | Orphan claiming 确定性提升：内部类→外部类解析（`Foo$1`→`Foo`）+ adapter_class→item_layout 扩展 class_to_layout_set + chain 携带 claim_hints | — |
+| 2026-06-03 | Handler body 提取成员调用 + Kotlin 属性式 UI 变更：no_chain 80→13，with-chain 293→360 | — |
