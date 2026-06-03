@@ -257,6 +257,7 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 - `extract_handler_body(source_lines, reg_line)` → 提取方法体：花括号块、箭头 lambda（`v -> expr()`）、方法引用回退
 - `_extract_calls_from_body(body, include_members)` → 提取方法调用名。**直接 handler body** 用 `include_members=True` 捕获成员调用（`view.setText(...)`、`launcher.launch(...)`）；调用图深层递归保持非限定调用，避免外部库叶子调用淹没链路
 - `_extract_property_mutations(body)` → 检测 Kotlin/Android 属性式 UI 变更（`view.isVisible = false`、`label.text = ...`），映射为对应 `ui_update` step
+- `_prune_effectless_calls(steps)` → 深度感知剪枝：剪掉递归展开中走到死胡同（无下游效果）的深层 `call` 噪声，保留 handler 自身语句、效果与控制流（见 §9.2）
 - `split_body_by_conditions(body)` → 递归切分 if/when/else 分支为结构化 segment
 
 **Layer 3 — Specialized Extractors**：
@@ -538,9 +539,13 @@ interactive 控件在 XML 中存在，但源码无对应 `setOnXxxListener`。`u
 
 Android ViewBinding 将 XML `id` 转为 camelCase 属性名（`drawer_layout` → `binding.drawerLayout`）。`camel_to_snake()` 反向转换：小写→大写边界、字母→数字边界插入下划线。匹配优先级：`findViewById` 显式映射 > snake_case 转换 + XML id 验证 > 直接匹配。
 
-### 9.2 Handler body 提取捕获成员调用
+### 9.2 Handler body 提取捕获成员调用 + 深层 call 噪声剪枝
 
 `_extract_calls_from_body(body, include_members=True)` 对直接 handler body 捕获 `obj.foo(` 形式的成员调用，恢复了大量"全是成员调用"的 handler（`view.setText`/`launcher.launch`/`recyclerView.post`）。深层调用图递归保持非限定调用，避免外部库叶子调用淹没链路。配合 `_extract_property_mutations` 处理 Kotlin 属性式 UI 变更。
+
+但成员调用若解析到项目方法会继续沿调用图递归展开（max_depth=3），大量展开会在 2-3 层深处终止于无法分类的通用 `call` 叶子（AntennaPod 约 4500 个）。这些叶子不被 `effect_summary`/`brief` 收录，只撑大原始链。`_prune_effectless_calls` **深度感知**地剪枝：depth-0（handler 自身语句，如 `openSettings()`）一律保留；depth≥1 的 `call` 仅当其子树仍能到达 navigate/ui_update/ui_feedback/async 时保留；效果与 condition（控制流）各层全保留。
+
+实测（AntennaPod）：剪枝前后 with_chain 360 / no_chain 13 不变（零信号损失），394 个迁移效果全留，但 `call` 步骤 2354→1375、`behavior_chains.json` 1.9MB→720KB（低于改动前的 972KB）。
 
 ### 9.3 inflate 派生 class→layout 的确定性
 
@@ -585,6 +590,7 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 | 2026-06-03 | 共享未绑定控件推断层 unbound_control_inference.py；ground_truth 产出 inferred_event_bindings |
 | 2026-06-03 | Orphan claiming：内部类→外部类解析 + adapter_class→item_layout + chain 携带 claim_hints |
 | 2026-06-03 | Handler body 提取成员调用 + Kotlin 属性式 UI 变更：no_chain 80→13，with-chain 293→360 |
+| 2026-06-03 | 深层 call 噪声剪枝：call 步骤 2354→1375，behavior_chains.json 1.9MB→720KB，覆盖率无损 |
 | 2026-06-03 | inflate 派生 class→layout（inflate_owner_map）：orphan 53→45，unknown screen_type 60→50，新增 18 映射 |
 | 2026-06-03 | Spec 字段重排：brief 提至最前，event_bindings 内 effect_summary 先于 effect_chain |
 | 2026-06-03 | 修复 Stage 0 路径归一化误用 sort_keys 破坏 spec 字段顺序；改为顺序保持序列化 |
