@@ -205,6 +205,17 @@ function_graph ────┤                         │
 - L2：将通用 Kotlin/Java 模式提升为边（createIntent 工厂、本地 Intent 变量）
 - L3：可选 per-repo overlay JSON
 
+**inflate 派生所有权 — `extractors/inflate_owner_map.py`**：
+
+导航分析只能发现「显式 Intent/transaction 目标」的屏幕；从不被显式跳转的辅助 Fragment、RecyclerView Adapter、子 Dialog 的 layout 没有任何 owning class，导致其 behavior chain 变成 orphan、spec 的 `screen_type=unknown`。
+
+「**哪个类 inflate 了某 layout**」是最强的确定性所有权信号。`inflate_owner_map` 将已提取的 `source_findings.inflates`（携带 `enclosing_symbol_id`）与 call_graph 符号表（解析 `class_name`）join，得到 `{class → [layout]}`，纯函数复用既有产物、不重新扫描源码。
+
+- `build_inflate_class_layouts(source_findings, call_graph)` → 派生映射
+- `merge_into_nav(nav, mapping)` → 仅填充导航未映射的类（导航所有权优先），作为 1:1 主映射并入 `class_layouts`，自动流入 `layout_to_classes` / `class_to_layout_set` / screen_type 推断，无需多映射（避免一个类 inflate 多个 layout 时把同一 chain 重复塞入多个 spec）。
+
+覆盖率（AntennaPod）：新增 18 条 class→layout，orphan chain 53→45，unknown screen_type 60→50。
+
 ### 4.7 Fragment 检测 — `extractors/fragment_detector.py`
 
 **输入**：源码 + XML 布局
@@ -440,16 +451,11 @@ Main > Nav Drawer > Subscription
 
 ### 5.4 Spec Schema（v2.2）
 
-渐进式披露设计：`brief` 供 LLM 快速了解页面，`ui`/`behavior` 供深入翻译时使用。
+渐进式披露设计：`brief` 供 LLM 快速了解页面，`ui`/`behavior` 供深入翻译时使用。`brief` 排在最前，LLM 读一屏即可决定是否深入。
 
 ```json
 {
-  "class": "MainActivity",
-  "layout": "activity_main",
-  "screen_type": "activity|fragment|dialog|adapter_item|unknown",
-  "source": "project|library",
-
-  // ── 摘要（LLM 优先读取） ──
+  // ── 摘要（LLM 最优先读取，排在最前） ──
   "brief": {
     "interactive_controls": [
       {"id": "btnSave", "type": "Button", "label": "Save",
@@ -461,6 +467,12 @@ Main > Nav Drawer > Subscription
     "has_adapters": false,
     "lifecycle_methods": ["onCreate", "onResume"]
   },
+
+  // ── 身份 ──
+  "screen_type": "activity|fragment|dialog|adapter_item|unknown",
+  "class": "MainActivity",
+  "layout": "activity_main",
+  "source": "project|library",
 
   // ── 导航（完整出入口） ──
   "navigation": {
@@ -505,9 +517,9 @@ Main > Nav Drawer > Subscription
       "element_id": "btnSave",
       "event_type": "click",
       "handler_method": "onCreate",
+      "effect_summary": ["navigate:finish", "ui_feedback:Toast"],
       "effect_chain": [{"step": "navigate", "target": "finish"},
                        {"step": "ui_feedback", "action": "Toast"}],
-      "effect_summary": ["navigate:finish", "ui_feedback:Toast"],
       "chain_depth": 2
     }, {
       // 合成 event_binding：dialog 中值输入控件，无独立 listener
@@ -556,7 +568,7 @@ v2.2 相比 v2.1 的变化：
 - **删除** `structure` 外壳 — 内容分散到 `ui` 和 `behavior`
 - **前移** `navigation` — 紧跟 `brief` 之后，LLM 更早获得上下文
 - **stats 键名同步** — `dynamic_gaps` → `inflated_layouts`，`dynamic_elements` → `programmatic_views`
-- **字段排序** — 身份 → 摘要 → 导航 → UI → 行为 → 统计
+- **字段排序** — 摘要(brief) → 身份 → 导航 → UI → 行为 → 统计；`brief` 提至最前，`event_bindings` 内 `effect_summary` 排在 `effect_chain` 之前
 - **新增** 合成 event_binding — interactive 控件无 listener 时自动生成 event_binding，按场景分类：
   - `value_read:on_dialog_confirm` — dialog 内的值输入控件（CheckBox/EditText/Spinner），值在确认按钮 handler 中被读取
   - `ui_feedback:dismiss_dialog` — dialog 内的 Button（通常是取消/关闭）
@@ -709,7 +721,7 @@ Total event_bindings in specs: 417
 - **小步提交**：每个功能点单独 commit
 - **复用优先**：共享逻辑提取到 `view_ref_utils.py` 等公共模块
 - **v1 兼容**：v1 冗余字段已删除（behaviors、screen_id），v2 是唯一 schema
-- **字段排序**：spec dict 按渐进式披露顺序构建（身份 → brief → 元素 → 导航 → 结构 → 行为 → 统计）
+- **字段排序**：spec dict 按渐进式披露顺序构建（brief → 身份 → 导航 → UI → 行为 → 统计；`brief` 最前）
 - **tree-sitter 可选**：所有使用 AST 的模块在 tree-sitter 不可用时回退到正则
 - **误报抑制**：多层过滤（PascalCase 类型名、系统对象、首字母大写检查等）
 - **产物可审计**：每个中间 JSON 文件独立可读，便于调试
@@ -743,3 +755,5 @@ Total event_bindings in specs: 417
 | 2026-06-03 | Orphan chain fallback claiming：handler_class→layout 反查第四条匹配，终端输出 fallback_claimed 统计 | — |
 | 2026-06-03 | Orphan claiming 确定性提升：内部类→外部类解析（`Foo$1`→`Foo`）+ adapter_class→item_layout 扩展 class_to_layout_set + chain 携带 claim_hints | — |
 | 2026-06-03 | Handler body 提取成员调用 + Kotlin 属性式 UI 变更：no_chain 80→13，with-chain 293→360 | — |
+| 2026-06-03 | inflate 派生 class→layout（inflate_owner_map）：orphan 53→45，unknown screen_type 60→50，新增 18 映射 | — |
+| 2026-06-03 | Spec 字段重排：brief 提至最前，event_bindings 内 effect_summary 先于 effect_chain | — |
