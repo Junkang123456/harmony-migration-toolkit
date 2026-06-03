@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from collections import defaultdict
 
+from extractors.unbound_control_inference import build_layout_contexts
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 
@@ -70,6 +72,20 @@ def _dedupe_layout_variants(all_layouts: set[str], known_layouts: set[str]) -> s
         else:
             result.add(variants[0])
     return result
+
+
+
+def _matches_claim_hints(binding: dict, layout_name: str, class_name: str, owner_classes: set[str]) -> bool:
+    claim_hints = binding.get("claim_hints") or {}
+    hinted_classes = set(claim_hints.get("owner_classes") or [])
+    hinted_layout = binding.get("layout", "")
+    if hinted_layout and hinted_layout == layout_name:
+        return True
+    if class_name and hinted_classes and class_name in hinted_classes:
+        return True
+    if hinted_classes and owner_classes and hinted_classes.intersection(owner_classes):
+        return True
+    return False
 
 
 def _build_brief(ui_elements, event_bindings, nav_out_edges, nav_in_edges,
@@ -187,8 +203,43 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         known_layouts |= set(layout_trees.keys())
     all_layouts = _dedupe_layout_variants(all_layouts, known_layouts)
 
-    # ── 8. 为每个 layout 生成 spec ──
+    # ── 8. 构建 layout→classes 反向索引 ──
+    # class_to_layout 已包含 inflate_owner_map 合并进来的主映射（见 main.py），
+    # 因此 inflate 派生的所有权在此自动流入，无需额外多映射（避免一个类映射到
+    # 多个 layout 时把同一 chain 重复塞进多个 spec）。
+    layout_to_classes: dict[str, set[str]] = defaultdict(set)
+    for cn, ly in class_to_layout.items():
+        layout_to_classes[ly].add(cn)
+    for cn, node in nav.get("nodes", {}).items():
+        ly = node.get("layout", "")
+        if ly:
+            layout_to_classes[ly].add(cn)
+    layout_contexts = build_layout_contexts(nav, adapter_layouts)
+    inferred_bindings = gt.get("inferred_event_bindings", [])
+
+    # ── 8b. 构建 class→layout 反向索引（用于 orphan chain fallback claiming）──
+    class_to_layout_set: dict[str, set[str]] = defaultdict(set)
+    for cn, ly in class_to_layout.items():
+        if ly:
+            class_to_layout_set[cn].add(ly)
+    for cn, node in nav.get("nodes", {}).items():
+        ly = node.get("layout", "")
+        if ly:
+            class_to_layout_set[cn].add(ly)
+    for al in (adapter_layouts or []):
+        ac = al.get("adapter_class", "")
+        il = al.get("item_layout", "")
+        if ac and il:
+            class_to_layout_set[ac].add(il)
+        hc = al.get("host_class", "")
+        if hc and il:
+            class_to_layout_set[hc].add(il)
+
+    # ── 9. 为每个 layout 生成 spec ──
     generated = 0
+    synthetic_counts: dict[str, int] = defaultdict(int)
+    assigned_chain_ids: set[int] = set()
+    total_assignments = 0
     for layout_name in sorted(all_layouts):
         if not layout_name:
             continue
@@ -282,39 +333,29 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         elif screen_type == "unknown" and (layout_name.startswith("item_") or layout_name.startswith("editor_")):
             screen_type = "adapter_item"
 
-        spec = {
-            "class": class_name,
-            "layout": layout_name,
-            "screen_type": screen_type,
-            "source": "library" if any(
-                e.get("source", "").startswith("library_") for e in elements
-            ) else "project",
-            "ui_elements": ui_elements,
-            "dynamic_ui": dynamic_ui,
-            "navigation": {
-                "entry_points": entry_points,
-                "exit_points": navigation,
-            },
-            "stats": {
-                "conditional_visibility": sum(1 for e in elements if e.get("conditional_visibility")),
-                "dynamic_gaps": len(gaps),
-                "nav_out": len(nav_out),
-                "nav_in": len(nav_in),
-            },
-        }
+        source = "library" if any(
+            e.get("source", "").startswith("library_") for e in elements
+        ) else "project"
 
-        # ── v2 extensions ──
+        # ── v2 extensions (compute before building spec dict) ──
+        screen_fragments = []
+        screen_dynamic = []
+        event_bindings = []
+        screen_lifecycle = {}
+        screen_adapters = []
+        brief = {}
+        ui_tree = None
+        behavior_entry = {}
+        all_ids = {e.get("id", "") for e in elements if e.get("id")}
+        owner_classes = layout_to_classes.get(layout_name, set())
+        if class_name:
+            owner_classes = owner_classes | {class_name}
+
         if spec_version >= "2.0":
-            spec["spec_version"] = "2.1"
-
-            # L0_structure
-            ui_tree = None
             if layout_trees and layout_name in layout_trees:
                 ui_tree = layout_trees[layout_name]
 
-            screen_fragments = []
             if fragments:
-                all_ids = {e.get("id", "") for e in elements if e.get("id")}
                 for frag in fragments:
                     cid = frag.get("container_id", "")
                     host = frag.get("host_class", "")
@@ -325,7 +366,6 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "attach_method": frag.get("attach_method", ""),
                         })
 
-            screen_dynamic = []
             if dynamic_elements:
                 for de in dynamic_elements:
                     if class_name and de.get("host_class", "") == class_name:
@@ -336,19 +376,15 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "properties": de.get("properties", {}),
                         })
 
-            spec["L0_structure"] = {
-                "ui_tree": ui_tree,
-                "fragments": screen_fragments,
-                "dynamic_elements": screen_dynamic,
-            }
-
-            # L1_behavior
-            event_bindings = []
             if behavior_chains:
-                all_ids = {e.get("id", "") for e in elements if e.get("id")}
-                for bc in behavior_chains:
+                for bc_idx, bc in enumerate(behavior_chains):
                     eid = bc.get("element_id", "")
-                    if eid in all_ids or (class_name and bc.get("handler", {}).get("file", "").replace("\\", "/").find(class_name) >= 0):
+                    handler_class = bc.get("handler", {}).get("class", "")
+                    handler_file = bc.get("handler", {}).get("file", "")
+                    bc_owner_classes = set(bc.get("claim_hints", {}).get("owner_classes") or [])
+                    if not bc_owner_classes and handler_class:
+                        bc_owner_classes = {handler_class}
+                    if eid in all_ids or (bc_owner_classes and bc_owner_classes & owner_classes):
                         chain = bc.get("effect_chain", [])
                         event_bindings.append({
                             "element_id": eid,
@@ -357,15 +393,31 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "effect_chain": chain,
                             "effect_summary": _summarize_effects(chain),
                             "chain_depth": bc.get("chain_depth", 0),
+                            "confidence": bc.get("confidence", "static_analysis"),
                         })
+                        assigned_chain_ids.add(bc_idx)
+                        total_assignments += 1
+                    elif bc_owner_classes and any(
+                        layout_name in class_to_layout_set.get(oc, set())
+                        for oc in bc_owner_classes
+                    ):
+                        chain = bc.get("effect_chain", [])
+                        event_bindings.append({
+                            "element_id": eid,
+                            "event_type": bc.get("event_type", ""),
+                            "handler_method": bc.get("handler", {}).get("method", ""),
+                            "effect_chain": chain,
+                            "effect_summary": _summarize_effects(chain),
+                            "chain_depth": bc.get("chain_depth", 0),
+                            "confidence": bc.get("confidence", "static_analysis"),
+                            "binding_source": "handler_class_layout_fallback",
+                        })
+                        assigned_chain_ids.add(bc_idx)
+                        total_assignments += 1
 
-            # lifecycle_hooks
-            screen_lifecycle = {}
             if lifecycle_hooks and class_name in lifecycle_hooks:
                 screen_lifecycle = lifecycle_hooks[class_name]
 
-            # adapter_bindings
-            screen_adapters = []
             if adapter_layouts:
                 for al in adapter_layouts:
                     if al.get("host_class", "") == class_name:
@@ -375,27 +427,80 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "item_layout": al.get("item_layout", ""),
                         })
 
-            l1_entry = {}
+            # ── Attach inferred bindings for unbound interactive controls ──
+            bound_ids = {eb.get("element_id", "") for eb in event_bindings}
+            for inferred in inferred_bindings:
+                eid = inferred.get("element_id", "")
+                if not eid or eid in bound_ids:
+                    continue
+                if not _matches_claim_hints(inferred, layout_name, class_name, owner_classes):
+                    continue
+                event_bindings.append({
+                    "element_id": eid,
+                    "event_type": inferred.get("event_type", ""),
+                    "handler_method": inferred.get("handler_method", ""),
+                    "effect_chain": inferred.get("effect_chain", []),
+                    "effect_summary": inferred.get("effect_summary", []),
+                    "chain_depth": inferred.get("chain_depth", 0),
+                    "confidence": inferred.get("confidence", "inferred"),
+                    "binding_source": inferred.get("binding_source", "unbound_inference"),
+                    "inference_category": inferred.get("inference_category", ""),
+                    "claim_hints": inferred.get("claim_hints", {}),
+                })
+                synthetic_counts[inferred.get("inference_category", "programmatic")] += 1
+                bound_ids.add(eid)
+
             if event_bindings:
-                l1_entry["event_bindings"] = event_bindings
+                behavior_entry["event_bindings"] = event_bindings
             if screen_lifecycle:
-                l1_entry["lifecycle_hooks"] = screen_lifecycle
+                behavior_entry["lifecycle_hooks"] = screen_lifecycle
+            if screen_fragments:
+                behavior_entry["fragments"] = screen_fragments
             if screen_adapters:
-                l1_entry["adapter_bindings"] = screen_adapters
-            if l1_entry:
-                spec["L1_behavior"] = l1_entry
+                behavior_entry["adapter_bindings"] = screen_adapters
 
-            spec["stats"]["fragments"] = len(screen_fragments)
-            spec["stats"]["dynamic_elements"] = len(screen_dynamic)
-            spec["stats"]["event_bindings"] = len(event_bindings)
-            spec["stats"]["event_bindings_with_chain"] = sum(
-                1 for eb in event_bindings if eb.get("effect_chain")
-            )
-
-            spec["brief"] = _build_brief(
+            brief = _build_brief(
                 ui_elements, event_bindings, navigation, entry_points,
                 screen_fragments, screen_adapters, screen_lifecycle,
             )
+
+        # ── Build spec dict in progressive-disclosure order ──
+        stats = {
+            "conditional_visibility": sum(1 for e in elements if e.get("conditional_visibility")),
+            "inflated_layouts": len(gaps),
+            "nav_out": len(nav_out),
+            "nav_in": len(nav_in),
+        }
+        if spec_version >= "2.0":
+            stats["fragments"] = len(screen_fragments)
+            stats["programmatic_views"] = len(screen_dynamic)
+            stats["event_bindings"] = len(event_bindings)
+            stats["event_bindings_with_chain"] = sum(
+                1 for eb in event_bindings if eb.get("effect_chain")
+            )
+
+        spec = {
+            "class": class_name,
+            "layout": layout_name,
+            "screen_type": screen_type,
+            "source": source,
+        }
+        if brief:
+            spec["brief"] = brief
+        spec["navigation"] = {
+            "entry_points": entry_points,
+            "exit_points": navigation,
+        }
+        ui_section = {"elements": ui_elements}
+        if spec_version >= "2.0":
+            ui_section["tree"] = ui_tree
+        ui_section["inflated_layouts"] = dynamic_ui
+        if spec_version >= "2.0":
+            ui_section["programmatic_views"] = screen_dynamic
+        spec["ui"] = ui_section
+        if behavior_entry:
+            spec["behavior"] = behavior_entry
+        spec["stats"] = stats
 
         out_path = specs_dir / f"{layout_name}_spec.json"
         out_path.write_text(json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -419,8 +524,8 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             "layout": spec.get("layout", ""),
             "class": spec.get("class", ""),
             "type": spec.get("screen_type", ""),
-            "controls": len(spec.get("ui_elements", [])),
-            "interactive": sum(1 for e in spec.get("ui_elements", []) if e.get("is_interactive")),
+            "controls": len(spec.get("ui", {}).get("elements", [])),
+            "interactive": sum(1 for e in spec.get("ui", {}).get("elements", []) if e.get("is_interactive")),
             "event_bindings": spec.get("stats", {}).get("event_bindings", 0),
             "nav_in": brief.get("nav_in", []),
             "nav_out": brief.get("nav_out", []),
@@ -434,6 +539,31 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         "screens": index_entries,
     }
     index_path.write_text(json.dumps(index_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    total_chains = len(behavior_chains) if behavior_chains else 0
+    assigned = len(assigned_chain_ids)
+    synthetic_total = sum(synthetic_counts.values())
+    total_eb = sum(e.get("event_bindings", 0) for e in index_entries)
+
+    fallback_claimed = 0
+    for spec_path in sorted(specs_dir.glob("*_spec.json")):
+        try:
+            spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for eb in spec_data.get("behavior", {}).get("event_bindings", []):
+            if eb.get("binding_source") == "handler_class_layout_fallback":
+                fallback_claimed += 1
+
+    return {
+        "total_chains": total_chains,
+        "assigned": assigned,
+        "orphan": total_chains - assigned,
+        "duplicated": total_assignments - assigned,
+        "synthetic": synthetic_total,
+        "fallback_claimed": fallback_claimed,
+        "total_event_bindings": total_eb,
+    }
 
 
 if __name__ == "__main__":

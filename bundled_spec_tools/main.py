@@ -191,8 +191,11 @@ def main():
 
     # Step 3: 合并 → ground truth
     print("\n[3/7] Building ground truth...")
-    gt = ground_truth_builder.build(xml_result, src_result,
-                                     view_ref_id_map=src_result.get("view_ref_id_map"))
+    gt = ground_truth_builder.build(
+        xml_result,
+        src_result,
+        view_ref_id_map=src_result.get("view_ref_id_map"),
+    )
     gt_path = out_dir / "ground_truth.json"
     gt_path.write_text(json.dumps(gt, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -208,12 +211,6 @@ def main():
     print(f"  Data-driven UI:          {s['data_driven_ui']}")
     print(f"  Non-UI bindings:         {s['non_ui_bindings']}")
     print(f"  Unmatched:               {s['unmatched']}")
-
-    total = s["xml_interactive_or_bound"] + s["dynamic_gap_pure_new"]
-    bound = s["xml_with_behavior_bound"]
-    if total > 0:
-        pct = bound / total * 100
-        print(f"\n  Behavior coverage (static): {bound}/{total} = {pct:.1f}%")
 
     # ── 阶段二：导航与关联 ──
 
@@ -243,6 +240,15 @@ def main():
         f"(kinds: {cand_payload['stats'].get('by_kind', {})})"
     )
     print(f"  Inferred class→layout mappings: {len(nav.get('class_layouts', {}))}")
+
+    # Augment class→layout with inflate-site ownership (strongest deterministic
+    # signal) — recovers screens that navigation analysis never reaches.
+    from extractors.inflate_owner_map import build_inflate_class_layouts, merge_into_nav
+    inflate_class_layouts = build_inflate_class_layouts(src_result, call_graph_payload)
+    added_mappings = merge_into_nav(nav, inflate_class_layouts)
+    if added_mappings:
+        nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  Inflate-derived class→layout (new): {added_mappings}")
     print(f"  Total nodes:     {total_nodes} "
           f"({activity_nodes} activities, {dialog_nodes} dialogs, {external_nodes} external)")
     print(f"  Total edges:     {total_edges}")
@@ -275,6 +281,31 @@ def main():
           f"(by method: {ds.get('by_creation_method', {})})")
     print(f"  Adapter layouts: {ds['total_adapter_layouts']}")
 
+    gt = ground_truth_builder.build(
+        xml_result,
+        src_result,
+        view_ref_id_map=src_result.get("view_ref_id_map"),
+        nav_result=nav,
+        adapter_layouts=dyn_result.get("adapter_layouts", []),
+    )
+    gt_path.write_text(json.dumps(gt, indent=2, ensure_ascii=False), encoding="utf-8")
+    inferred_stats = gt.get("inferred_event_binding_stats", {})
+    total = gt["coverage_stats"]["xml_interactive_or_bound"] + gt["coverage_stats"]["dynamic_gap_pure_new"]
+    bound = gt["coverage_stats"]["xml_with_behavior_bound"]
+    cross_bound = inferred_stats.get("covered", 0)
+    uncovered = inferred_stats.get("uncovered", 0)
+    if total > 0:
+        pct = (bound + cross_bound) / total * 100
+        print(f"\n  Behavior coverage: {bound + cross_bound}/{total} = {pct:.1f}%")
+        print(f"    direct:            {bound}")
+        if cross_bound:
+            print(f"    cross-component:   {cross_bound}")
+            for cat, count in sorted(inferred_stats.get("by_category", {}).items(), key=lambda x: -x[1]):
+                if cat != "programmatic":
+                    print(f"      {cat}: {count}")
+        if uncovered > 0:
+            print(f"    uncovered:         {uncovered}")
+
     # Step 4d: 行为链提取
     print("\n[4d] Extracting behavior chains...")
     all_xml_ids = {e["id"] for e in xml_result["elements"] if e.get("id")}
@@ -286,6 +317,21 @@ def main():
     bcs = bc_result["stats"]
     print(f"  Bindings: {bcs['total_bindings']}, with chain: {bcs['with_effect_chain']}, "
           f"no handler: {bcs['without_handler']}")
+    by_confidence = bcs.get("by_confidence", {})
+    if by_confidence:
+        print(f"  Chain confidence: {by_confidence}")
+        static_count = by_confidence.get("static_analysis", 0)
+        inferred_count = sum(
+            by_confidence.get(key, 0)
+            for key in ("fallback_analysis", "inferred")
+        )
+        print(f"  Deterministic vs inferred: {static_count} static_analysis, {inferred_count} inferred")
+    if bcs.get("handler_resolution"):
+        hrs = {k: v for k, v in bcs["handler_resolution"].items() if v}
+        if hrs:
+            print(f"  Handler resolution: {hrs}")
+    if bcs.get("fallback_chain"):
+        print(f"  Fallback chain: {bcs['fallback_chain']}")
     print(f"  Max depth: {bcs['max_chain_depth']}, by step: {bcs.get('by_step_type', {})}")
 
     # Step 5: Gap 合并
@@ -481,7 +527,7 @@ def main():
     specs_dir = out_dir / "specs"
     specs_dir.mkdir(exist_ok=True)
 
-    generate_all_specs(nav, gt, flat, dag, specs_dir,
+    spec_stats = generate_all_specs(nav, gt, flat, dag, specs_dir,
                        layout_trees=xml_result.get("layout_trees"),
                        fragments=frag_result.get("fragments"),
                        dynamic_elements=dyn_result.get("dynamic_elements"),
@@ -492,6 +538,15 @@ def main():
 
     generated = len(list(specs_dir.glob("*_spec.json")))
     print(f"  Generated {generated} specs in output/specs/")
+
+    if spec_stats and spec_stats["total_chains"] > 0:
+        ss = spec_stats
+        print(f"\n  Binding assignment: {ss['total_chains']} chains"
+              f" → {ss['assigned']} assigned, {ss['orphan']} orphan, {ss['duplicated']} duplicated")
+        if ss.get("fallback_claimed"):
+            print(f"  Fallback claimed: {ss['fallback_claimed']} (handler_class→layout)")
+        print(f"  Synthetic: {ss['synthetic']} (cross-component)")
+        print(f"  Total event_bindings in specs: {ss['total_event_bindings']}")
 
     print("\nDone. Output files:")
     for name in ["static_xml.json", "source_findings.json", "ground_truth.json",
