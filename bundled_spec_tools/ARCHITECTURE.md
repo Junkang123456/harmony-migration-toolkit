@@ -2,41 +2,60 @@
 
 ## 1. 项目定位
 
-`bundled_spec_tools` 是一个**纯静态分析工具**，输入一个 Android 项目的源码目录，输出结构化 JSON，描述该 App 的全部 UI 结构、导航关系、控件行为和生命周期。这些 JSON 文件（称为 **spec**）供下游 stage 消费，最终目标是将 Android App 自动翻译为 HarmonyOS（鸿蒙）应用。
+`bundled_spec_tools` 是一个**纯静态分析工具**，输入一个 Android 项目的源码目录，输出结构化 JSON，描述该 App 的全部 UI 结构、导航关系、控件行为和生命周期。这些 JSON 文件（统称 **facts**，其中每屏幕一份的迁移描述称为 **spec**）供下游 stage 消费，最终目标是把 Android App 自动翻译为 HarmonyOS（鸿蒙）应用。
 
-**不做的事**：不编译 Android 代码、不运行 App、不生成 HarmonyOS 代码。它只负责"理解"Android App 的 UI 层。
+**不做的事**：不编译 Android 代码、不运行 App、不生成 HarmonyOS 代码。它只负责"理解"Android App 的 UI 层并把理解结果写成确定性事实。
+
+**在大流水线中的位置**：本工具是 `pipeline.py` 的 **Stage 0**（`stages/stage0_run_spec_tools.py` 调 `bundled_spec_tools/main.py`），产物落在 `<out>/intermediate/0_android_facts/`。后续 stage（1 规范化、2 框架映射、3 鸿蒙架构、5 feature tree、4 脚手架、7 agent bundle）都建立在 Stage 0 的 facts 之上。本文档只覆盖 Stage 0。
 
 ---
 
-## 2. 运行方式
+## 2. 设计原则
+
+这些原则贯穿全部模块，是阅读后续章节的前提：
+
+1. **确定性优先，推断兜底**。任何能从静态 AST / 调用图 / XML 确定推出的关系，绝不用启发式猜测。只有在确定性手段全部失败、且缺失会显著拉低覆盖率时，才生成带 `confidence: inferred` 标记的低置信度结果，并永远可与确定性结果区分。
+2. **泛化，不针对单一仓**。所有正则与模式都基于 Android/Kotlin/Java 的**语言与框架通用写法**，不为某个具体 App 硬编码 id 名、类名或路径。
+3. **复用既有产物，不重复扫描**。模块间通过已提取的中间 JSON（`source_findings`、`call_graph`、`static_xml` 等）传递事实；新分析尽量是对既有事实的纯函数 join，而非重新读源码。
+4. **产物可审计**。每个中间 JSON 独立可读，字段语义稳定，便于调试与人工核对。
+5. **tree-sitter 可选**。所有依赖 AST 的模块在 tree-sitter 不可用时回退到正则，保证离线/受限环境可运行。
+
+---
+
+## 3. 运行方式
 
 ```bash
+# 直接运行 Stage 0
 python bundled_spec_tools/main.py <android_project_root> [--out <dir>] [--validate]
+
+# 或经由大流水线（Stage 0 是其中一环）
+python pipeline.py --android-root <android_project_root> --out <dir>
 ```
 
 - `<android_project_root>`：Android 工程根目录（含 `src/main/`、`AndroidManifest.xml`）
 - `--out`：输出目录，默认 `bundled_spec_tools/output/`
-- `--validate`：额外执行字节码/Manifest/Layout 交叉验证
+- `--validate`：额外执行字节码 / Manifest / Layout 交叉验证
 
 运行时间取决于项目规模，AntennaPod（534 个源文件）约 8-10 分钟，主要耗时在 tree-sitter AST 解析。
 
 ---
 
-## 3. 流水线架构
+## 4. 流水线架构
 
-`main.py` 按 7 个阶段依次执行，每个阶段输出独立的 JSON 文件：
+`main.py` 按 7 个阶段依次执行，每个阶段输出独立 JSON：
 
 ```
 [1/7] XML 静态提取          → static_xml.json
 [2/7] 源码扫描 + 函数图谱    → source_findings.json, function_symbols.json, call_graph.json
 [3/7] Ground Truth 合并      → ground_truth.json
 [4/7] 导航图提取            → navigation_graph.json, navigation_candidates.json
+                              + inflate 派生 class→layout 并入 navigation_graph
   [4b] Fragment 检测        → fragments.json
   [4c] 动态 UI 检测         → dynamic_ui.json
   [4d] 行为链提取           → behavior_chains.json
 [5/7] Gap 合并（可选）      → gap_analysis.json
 [6/7] UI DAG 组装           → ui_dag.json, ui_paths.json, ui_effect_paths.json, ...
-[7/7] Spec 生成             → specs/*.json, app_model/
+[7/7] Spec 生成             → specs/*.json, screen_index.json, app_model/
 ```
 
 ### 依赖关系图
@@ -45,13 +64,15 @@ python bundled_spec_tools/main.py <android_project_root> [--out <dir>] [--valida
 xml_extractor ─────┐
                    ├─→ ground_truth_builder ─┐
 source_extractor ──┤                         │
-                   │                         ├─→ generate_specs ─→ specs/*.json
-function_graph ────┤                         │
+                   │                         │
+function_graph ────┼─→ inflate_owner_map ────┤   (join inflates × call_graph symbols)
+                   │        │                 │
+                   │        ↓ merge           │
                    ├─→ navigation_extractor ──┤
                    │                         │
                    ├─→ fragment_detector ─────┤
-                   │                         │
-                   ├─→ dynamic_ui_extractor ──┤
+                   │                         ├─→ generate_specs ─→ specs/*.json
+                   ├─→ dynamic_ui_extractor ──┤                    screen_index.json
                    │                         │
                    └─→ behavior_chain_extractor ─┘
                                              │
@@ -62,409 +83,268 @@ function_graph ────┤                         │
 
 ---
 
-## 4. 模块详解
+## 5. 模块详解
 
-### 4.1 XML 静态提取 — `extractors/xml_extractor.py`
+### 5.1 XML 静态提取 — `extractors/xml_extractor.py`
 
 **输入**：`res/layout/*.xml`, `res/menu/*.xml`, `res/navigation/*.xml`
-
 **输出**：`static_xml.json`
 
-功能：
-- 解析所有 XML 布局文件，提取每个控件的 `id`、`tag`（类型名）、`text`、`hint`、`contentDescription`
+- 解析所有 XML 布局，提取每个控件的 `id`、`tag`（类型名）、`text`、`hint`、`contentDescription`
 - 判断控件是否可交互（Button/EditText/SeekBar 等天然可交互；TextView/ImageView 仅在有 `clickable=true` 或 `onClick` 时才算）
 - 检测 `visibility="gone"/"invisible"` 的初始隐藏控件
 - 提取 `onClick` XML 属性绑定
-- **构建 `layout_trees`**：每个布局文件的完整控件树（保留嵌套层级），供 v2 spec 的 `ui.tree` 使用
-- 合并字符串资源 `res/values/strings.xml` 到 `strings` 字段
+- **构建 `layout_trees`**：每个布局文件的完整控件树（保留嵌套层级），供 spec 的 `ui.tree` 使用
+- 合并字符串资源 `res/values/strings.xml` 到 `strings`
 
-**关键数据结构**：
 ```json
 {
   "elements": [
     {"id": "btnSave", "tag": "Button", "layout": "activity_main", "text": "Save",
-     "is_interactive": true, "source": "xml_layout", ...}
+     "is_interactive": true, "source": "xml_layout"}
   ],
-  "layout_trees": {
-    "activity_main": {"tag": "LinearLayout", "id": "", "children": [...]}
-  },
-  "strings": {"app_name": "MyApp", ...},
-  "stats": {"total": 525, "interactive": 182, "hidden_by_default": 30}
+  "layout_trees": {"activity_main": {"tag": "LinearLayout", "id": "", "children": [...]}},
+  "strings": {"app_name": "MyApp"},
+  "stats": {"total": 736, "interactive": 252, "hidden_by_default": 67}
 }
 ```
 
-### 4.2 源码扫描 — `extractors/source_extractor.py`
+### 5.2 源码扫描 — `extractors/source_extractor.py`
 
-**输入**：`src/main/**/*.java`, `src/main/**/*.kt`
-
+**输入**：`src/main/**/*.java`, `*.kt`
 **输出**：`source_findings.json`
 
-功能（5 个核心语义模式）：
-1. **R.id 分发块**（`id_dispatchers`）：when/switch 中 `R.id.xxx → handler` 的分发映射
-2. **事件注册**（`event_registrations`）：三种检测模式覆盖主流 Android 事件绑定写法：
+5 个核心语义模式：
+
+1. **R.id 分发块**（`id_dispatchers`）：when/switch 中 `R.id.xxx → handler` 的映射。
+2. **事件注册**（`event_registrations`）：三种检测模式覆盖主流写法：
    - `binding.xxx.setOnClickListener(` — ViewBinding 直接引用
    - `findViewById(R.id.xxx).setOnClickListener(` — 链式调用（锚定 `R.id.` 编译期常量）
    - `var = yyy.findViewById(R.id.xxx)` → `var.setOnClickListener(` — 局部变量追踪
-   
-   提取 `view_ref`、`event_type`（click/touch/text_change 等）、`method`、`enclosing_fn`。过滤 `remove*`（移除监听）、`(null)`（清除监听）、PendingIntent（标记 `is_pending_intent`）。
-3. **可见性控制**（`visibility_controls`）：`setVisibility(View.GONE)`、`isVisible = false` 等
-4. **布局膨胀**（`inflates`）：`inflate(R.layout.xxx)` 和 `XxxBinding.inflate()`
-5. **数据驱动 UI**（`data_driven_ui`）：构建选项列表后传入弹窗/列表的静态文本
+   提取 `view_ref`、`event_type`、`method`、`enclosing_fn`，以及 **callback metadata**（`callback_kind`、`callback_ref`、`registration_snippet`，供行为链恢复 handler 复用）。过滤 `remove*`、`(null)`、PendingIntent（标记 `is_pending_intent`）。
+3. **可见性控制**（`visibility_controls`）：`setVisibility(View.GONE)`、`isVisible = false` 等。
+4. **布局膨胀**（`inflates`）：`inflate(R.layout.xxx)` 和 `XxxBinding.inflate()`，携带 `enclosing_symbol_id`。
+5. **数据驱动 UI**（`data_driven_ui`）：构建选项列表后传入弹窗/列表的静态文本。
 
-误报抑制：
-- PascalCase 的 `view_ref` 被视为类型名（非实例变量），自动过滤
-- `decorView`、`contentResolver` 等已知系统对象的事件注册被排除
-- 第三方库目录不扫描事件注册
+`_enrich_findings_with_symbols()` 用 AST 为每条 finding 补 `enclosing_symbol_id` / `function_name` / `function_range`，这是行为链与 inflate 所有权追踪的关键锚点。
 
-**同时生成 `view_ref_id_map`**：per-file 的 `{变量名 → R.id.xxx}` 映射（来自 `findViewById` 调用），供 ground_truth_builder 精确匹配。
+误报抑制：PascalCase `view_ref` 视为类型名过滤；`decorView`/`contentResolver` 等系统对象排除；第三方库目录不扫事件注册。同时生成 `view_ref_id_map`（per-file `{变量 → R.id.xxx}`）。
 
-### 4.3 函数图谱 — `extractors/function_graph_extractor.py`
-
-**输入**：Kotlin/Java 源码
+### 5.3 函数图谱 — `extractors/function_graph_extractor.py`
 
 **输出**：`function_symbols.json`, `call_graph.json`
 
-功能：
-- 提取所有函数符号（`symbol_id` 格式：`fn:package.Class.method/arity`）
-- 构建调用图（caller → callee 关系），用于 behavior_chain_extractor 追踪调用链
-- 优先使用 tree-sitter AST，回退到正则
+- 提取所有函数符号（`symbol_id` = `fn:package.Class.method/arity`），含 `class_name`、`file`、`start_line`、`end_line`
+- 构建调用图（caller → callee），供行为链追踪与 inflate 所有权解析
+- 优先 tree-sitter AST，回退正则
 
-**数据结构**：
 ```json
 // call_graph.json
 {
-  "symbols": [{"symbol_id": "fn:...", "function_name": "onClick", "file": "...", ...}],
-  "calls": [{"from_symbol_id": "fn:A.onClick/1", "to_symbol_id": "fn:B.navigate/0", ...}],
+  "symbols": [{"symbol_id": "fn:...", "function_name": "onClick", "class_name": "MainActivity", ...}],
+  "calls": [{"from_symbol_id": "fn:A.onClick/1", "callee_name": "navigate", ...}],
   "unresolved_calls": [...]
 }
 ```
 
-### 4.4 AST 索引 — `extractors/ast_index.py`
+### 5.4 AST 索引 — `extractors/ast_index.py`
 
-**依赖**：`tree_sitter_language_pack`（可选，缺失时各模块回退到正则）
+tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺失时各模块回退正则）：
+- `build_class_hierarchy(project_root)` — 继承链映射
+- `lookup_class(name)` / `_resolve_android_base(class_name)` — 判定 Activity/Fragment/Dialog/Service
+- `find_enclosing_symbol(file, line)` — 行号 → 所属函数符号
+- 低级遍历工具 `_walk` / `_node_text` / `_line` / `_source_files`
 
-功能：
-- 统一的 tree-sitter Kotlin/Java 解析入口
-- `build_class_hierarchy(project_root)`：构建继承链映射（`Class → 父类`）
-- `lookup_class(name)`：查找类的完整信息（文件路径、继承链、是否 Fragment/Activity/Dialog）
-- `_resolve_android_base(class_name)`：判断一个类是 Activity/Fragment/Dialog/Service/其他
-- 提供 `_walk`、`_node_text`、`_line`、`_source_files` 等低级 AST 遍历工具
+被 fragment_detector、navigation_extractor、source_extractor、function_graph_extractor、dynamic_ui_extractor 共享。
 
-被 `fragment_detector`、`navigation_extractor`、`source_extractor`、`function_graph_extractor`、`dynamic_ui_extractor` 共同依赖。
+### 5.5 Ground Truth 合并 — `extractors/ground_truth_builder.py`
 
-### 4.5 Ground Truth 合并 — `extractors/ground_truth_builder.py`
-
-**输入**：`static_xml.json` + `source_findings.json`
-
+**输入**：`static_xml.json` + `source_findings.json`（+ nav + adapter_layouts）
 **输出**：`ground_truth.json`
 
-功能：将 XML 控件与源码行为绑定在一起：
-1. `event_registrations` 的 `view_ref` 对齐 XML `id`（支持 ViewBinding camelCase → snake_case 转换）
+把 XML 控件与源码行为绑定：
+
+1. `event_registrations` 的 `view_ref` 对齐 XML `id`（ViewBinding camelCase→snake_case）
 2. `id_dispatchers` 直接对齐 XML `id`
-3. `visibility_controls` 标记条件可见性
-4. 未在 XML 中出现的 `inflates` 生成 `dynamic_gap`（动态布局）
-5. `data_driven_ui` 生成数据驱动 gap
+3. `visibility_controls` 标记 `conditional_visibility`
+4. 未在 XML 出现的 `inflates` → `dynamic_gap`
+5. `data_driven_ui` → 数据驱动 gap
+6. **未绑定 interactive 控件推断**（见 5.10）→ `inferred_event_bindings`
 
-**关键统计**（AntennaPod 示例）：
-- XML 元素 525 个，其中 239 个绑定了行为，97 个条件可见
-- 动态 gap 80 个（含 inflate_layout、inflate_binding、data_driven_ui）
-- 未匹配 51 个
+关键统计（AntennaPod）：525 XML 元素，246 绑定行为，271 interactive-or-bound，97 条件可见，dynamic_gap 80，unmatched 44。
 
-### 4.6 导航图提取 — `extractors/navigation_extractor.py`
-
-**输入**：源码 + AndroidManifest.xml + （可选）字节码
+### 5.6 导航图提取 — `extractors/navigation_extractor.py`
 
 **输出**：`navigation_graph.json`, `navigation_candidates.json`
 
-检测的导航模式：
-- `startActivity(Intent(this, XxxActivity::class.java))` → Activity 跳转
-- `XxxDialog().show(...)` → Dialog 弹出
-- `intent-filter` → 外部入口
-- `finish()` / `onBackPressed()` → 返回
-- 隐式 Intent 解析
-- Adapter → Host 绑定
-- Fragment 导航（通过 NavController/FragmentTransaction）
+检测模式：`startActivity(Intent(this, XxxActivity::class.java))`、`XxxDialog().show()`、`intent-filter`、`finish()`/`onBackPressed()`、隐式 Intent、Adapter→Host 绑定、Fragment 导航。
 
-**数据结构**：
 ```json
 {
-  "nodes": {
-    "MainActivity": {"type": "activity", "layout": "main", ...},
-    "SettingsDialog": {"type": "dialog", "layout": "settings_dialog", ...}
-  },
-  "edges": [
-    {"from": "MainActivity", "to": "SettingsDialog", "trigger": "menu settings",
-     "type": "dialog", "via": "Dialog()"}
-  ],
-  "class_layouts": {"MainActivity": "main", ...}
+  "nodes": {"MainActivity": {"type": "activity", "layout": "main"}},
+  "edges": [{"from": "MainActivity", "to": "SettingsDialog", "trigger": "menu settings", "type": "dialog"}],
+  "class_layouts": {"MainActivity": "main"}
 }
 ```
 
-辅助模块 `nav_pipeline.py` 提供三层导航增强：
-- L1：navigation_candidates（原始事实 + 非导航效果）
-- L2：将通用 Kotlin/Java 模式提升为边（createIntent 工厂、本地 Intent 变量）
-- L3：可选 per-repo overlay JSON
+辅助 `nav_pipeline.py` 三层增强：L1 candidates（原始事实）、L2 通用模式提边（createIntent 工厂、本地 Intent 变量）、L3 可选 per-repo overlay。
 
-**inflate 派生所有权 — `extractors/inflate_owner_map.py`**：
+### 5.7 inflate 派生所有权 — `extractors/inflate_owner_map.py`
 
-导航分析只能发现「显式 Intent/transaction 目标」的屏幕；从不被显式跳转的辅助 Fragment、RecyclerView Adapter、子 Dialog 的 layout 没有任何 owning class，导致其 behavior chain 变成 orphan、spec 的 `screen_type=unknown`。
+**为何需要**：导航分析只能发现「显式 Intent/transaction 目标」的屏幕。从不被显式跳转的辅助 Fragment、RecyclerView Adapter、子 Dialog 的 layout 没有任何 owning class，导致其 behavior chain 变成 orphan、spec 的 `screen_type=unknown`。
 
-「**哪个类 inflate 了某 layout**」是最强的确定性所有权信号。`inflate_owner_map` 将已提取的 `source_findings.inflates`（携带 `enclosing_symbol_id`）与 call_graph 符号表（解析 `class_name`）join，得到 `{class → [layout]}`，纯函数复用既有产物、不重新扫描源码。
+**核心洞察**：「**哪个类 inflate 了某 layout**」是最强的确定性所有权信号——比任何命名启发式都可靠。
 
-- `build_inflate_class_layouts(source_findings, call_graph)` → 派生映射
-- `merge_into_nav(nav, mapping)` → 仅填充导航未映射的类（导航所有权优先），作为 1:1 主映射并入 `class_layouts`，自动流入 `layout_to_classes` / `class_to_layout_set` / screen_type 推断，无需多映射（避免一个类 inflate 多个 layout 时把同一 chain 重复塞入多个 spec）。
+- `build_inflate_class_layouts(source_findings, call_graph)`：把 `source_findings.inflates`（携带 `enclosing_symbol_id`）与 call_graph 符号表（解析 `class_name`）join，得到 `{class → [layout]}`。纯函数复用既有产物，**不重新扫描源码**。
+- `merge_into_nav(nav, mapping)`：仅填充导航**未映射**的类（导航所有权优先），作为 **1:1 主映射**并入 `class_layouts`，自动流入 `layout_to_classes` / `class_to_layout_set` / screen_type 推断。
+
+刻意用 1:1 主映射而非多映射：一个类可能 inflate 多个 layout（如某 Fragment 既加载主布局又展示子 dialog），若全量多映射会把同一 chain 重复塞进多个 spec。经 A/B 实测，多映射使 duplicated 105→176（+71 噪声）却不增加真正认领量，故弃用。
 
 覆盖率（AntennaPod）：新增 18 条 class→layout，orphan chain 53→45，unknown screen_type 60→50。
 
-### 4.7 Fragment 检测 — `extractors/fragment_detector.py`
-
-**输入**：源码 + XML 布局
+### 5.8 Fragment 检测 — `extractors/fragment_detector.py`
 
 **输出**：`fragments.json`
 
-检测 9 种 Fragment 挂载模式：
-1. **FragmentTransaction.replace/add**（正则）
-2. **ViewPager Adapter**（正则 → getItem 中的 Fragment 实例化）
-3. **XML `<fragment>` 标签**
-4. **AST 类声明**（tree-sitter 遍历所有 Fragment 子类）
-5. **AST FragmentTransaction**（AST 精确解析 .replace/.add 调用参数）
-6. **AST loadFragment/showFragment**（自定义 Fragment 加载方法）
-7. **AST .show() 调用**（DialogFragment 展示）
-8. **AST switch-case 工厂**（工厂方法中 when/switch 返回不同 Fragment）
-9. **Fragment 实例化上下文**（new XxxFragment() 所在方法的宿主类）
+9 种挂载模式：FragmentTransaction.replace/add（正则）、ViewPager Adapter、XML `<fragment>`、AST 类声明、AST FragmentTransaction、AST loadFragment/showFragment、AST `.show()`（DialogFragment）、AST switch-case 工厂、Fragment 实例化上下文。
 
-参数解析通过 `_resolve_fragment_arg()` 追踪数据流：直接类名 → `new Xxx()` → `Xxx.newInstance()` → 变量赋值 → 方法返回值。
+`_resolve_fragment_arg()` 追踪数据流确定实际 Fragment 类：直接类名 → `new Xxx()` → `Xxx.newInstance()` → 变量赋值 → 方法返回值。
 
-**覆盖率**（AntennaPod）：84 个声明的 Fragment 中 79 个找到了宿主（94%）。
+覆盖率（AntennaPod）：84 个声明 Fragment 中 79 个找到宿主（94%）。
 
-### 4.8 动态 UI 检测 — `extractors/dynamic_ui_extractor.py`
-
-**输入**：源码
+### 5.9 动态 UI 检测 — `extractors/dynamic_ui_extractor.py`
 
 **输出**：`dynamic_ui.json`
 
-检测 3 种动态 UI 创建模式：
-1. **addView**：`container.addView(new XxxView(ctx))` — 程序化创建控件
-2. **inflate + addView**：先 inflate 布局再 addView — 动态插入布局片段
-3. **setAdapter**：RecyclerView/ListView 的 Adapter 关联，追踪到 item 布局
+3 种动态创建模式：`addView`（程序化创建控件）、`inflate + addView`（动态插入布局片段）、`setAdapter`（RecyclerView/ListView 的 Adapter 关联，追踪 item 布局）。
 
-**输出**：
 ```json
 {
-  "dynamic_elements": [...],    // addView 创建的控件（v2 ui.programmatic_views）
-  "adapter_layouts": [          // Adapter 绑定关系（v2 behavior.adapter_bindings）
-    {"adapter_class": "QueueRecyclerAdapter", "item_layout": "feeditemlist_item",
-     "host_class": "QueueFragment", "host_id": "recyclerView"}
-  ]
+  "dynamic_elements": [...],
+  "adapter_layouts": [{"adapter_class": "QueueRecyclerAdapter", "item_layout": "feeditemlist_item",
+                       "host_class": "QueueFragment", "host_id": "recyclerView"}]
 }
 ```
 
-> **注意**：v1 spec 的 `ui.inflated_layouts` 字段来自 ground_truth_builder 的 `dynamic_gap`（inflate 模式），与此处的 `dynamic_elements`（addView 模式）是**互补关系**，不是重复。
+> spec 的 `ui.inflated_layouts`（来自 ground_truth 的 inflate gap）与此处的 `dynamic_elements`（addView 模式）是**互补**关系。
 
-### 4.9 行为链提取 — `extractors/behavior_chain_extractor.py`
+### 5.10 共享未绑定控件推断 — `extractors/unbound_control_inference.py`
 
-**输入**：`source_findings.json` + `call_graph.json` + XML id 集合
+为无 listener 的 interactive 控件生成低置信度 `inferred_event_bindings`，被 ground_truth 与 spec 复用：
 
+- `build_layout_contexts(nav, adapter_layouts)`：一次构建 layout → owner/dialog/adapter 上下文
+- `classify_unbound_control(tag, layout, ctx)`：按场景分类
+  - `framework_managed` — TabLayout/ViewPager/RecyclerView/ScrollView 等框架托管
+  - `value_read_on_confirm` — dialog 内的值输入控件（值在确认按钮 handler 读取）
+  - `dialog_action` — dialog 内 Button（取消/关闭）
+  - `adapter_bindview` — item 布局控件（handler 在 adapter.onBindViewHolder）
+  - `programmatic` — 兜底，handler 存在但静态无法定位
+- 每条推断 binding 带 `claim_hints`（owner_classes / screen_types / adapter_classes），给 spec orphan claiming 直接复用，统一标 `confidence: inferred`
+
+### 5.11 行为链提取 — `extractors/behavior_chain_extractor.py`
+
+**输入**：`source_findings` + `call_graph` + XML id 集合
 **输出**：`behavior_chains.json`
 
 三层架构：
 
 **Layer 1 — Step Pipeline**（纯函数，无 Android 假设）：
-- `classify_call(method_name)` → 分类为 `navigate` / `ui_feedback` / `ui_update` / `async` / `call`
-- `build_step(call, call_graph, depth)` → 递归构建调用链步骤
-- `follow_calls(body, call_graph, max_depth=3)` → 遍历调用图
-
-**Layer 2 — Body Parser**（文本处理）：
-- `extract_handler_body(source_text, method_start_line)` → 提取方法体，支持三种形式：
-  - 花括号块 `{ ... }`（匿名类、多行 lambda）
-  - 箭头 lambda `v -> expression()`（无花括号单行 lambda）
-  - 方法引用 `this::onClick` 回退
-- `split_conditions(body)` → 检测 if/when/switch 分支
+- `classify_call(method_name)` → `navigate` / `ui_feedback` / `ui_update` / `async` / `call`
+- `build_step_for_call(...)` → 递归构建步骤，沿 call_graph 展开（max_depth=3）
 - `extract_braced_block(text, pos)` → 大括号匹配
-- `_extract_calls_from_body(body, include_members)` → 提取方法调用名。**直接 handler body** 用 `include_members=True` 捕获成员调用（`view.setText(...)`、`launcher.launch(...)`）；调用图深层递归保持非限定调用，避免外部库叶子调用淹没链路。
-- `_extract_property_mutations(body)` → 检测 Kotlin/Android 属性式 UI 变更（`view.isVisible = false`、`label.text = ...`），映射为对应的 `ui_update` step（setVisibility/setText/...）。通用，不针对单一仓。
 
-**registration callback metadata**（来自 `source_extractor`）：
-- `callback_kind`：`lambda | method_ref | anonymous_listener | callback_var | unknown`
-- `callback_ref`：方法引用或 callback 变量名（如能识别）
-- `registration_snippet`：注册点附近的短文本，供 handler 恢复复用
+**Layer 2 — Body Parser**（文本处理，无 call_graph 依赖）：
+- `extract_handler_body(source_lines, reg_line)` → 提取方法体：花括号块、箭头 lambda（`v -> expr()`）、方法引用回退
+- `_extract_calls_from_body(body, include_members)` → 提取方法调用名。**直接 handler body** 用 `include_members=True` 捕获成员调用（`view.setText(...)`、`launcher.launch(...)`）；调用图深层递归保持非限定调用，避免外部库叶子调用淹没链路
+- `_extract_property_mutations(body)` → 检测 Kotlin/Android 属性式 UI 变更（`view.isVisible = false`、`label.text = ...`），映射为对应 `ui_update` step
+- `split_body_by_conditions(body)` → 递归切分 if/when/else 分支为结构化 segment
 
 **Layer 3 — Specialized Extractors**：
-- `extract_event_chains(event_registrations, call_graph, project_root, xml_ids)` → 为每个事件注册构建完整的 event → handler → effect 链
-- `extract_lifecycle_hooks(symbols)` → 提取生命周期方法调用（callee 自动去重）
+- `extract_event_chains(...)` → 为每个事件注册构建 event → handler → effect 链
+- `extract_lifecycle_hooks(symbols)` → 提取生命周期方法的直接调用（callee 去重）
 
-**element_id 解析**（ViewBinding 支持）：
-- `_build_viewref_to_id(source)` → 从 `val x = findViewById(R.id.y)` 和 `x = findViewById(R.id.y)` 构建映射（同时支持 Kotlin 和 Java 风格）
-- `resolve_element_id(view_ref, viewref_map, xml_ids)` 支持三种解析路径：
-  1. `findViewById` 显式映射（`viewref_map`）— 覆盖混合大小写 id（如 `widget_opacity_seekBar`）
-  2. ViewBinding camelCase → snake_case 转换，再与已知 XML id 集合匹配
-  3. 直接匹配
+**handler body 恢复分层策略**（按 `callback_kind` 选路）：inline lambda → method reference（`this::onClick`）→ callback variable（追变量赋值）→ anonymous listener（`object : Listener {}`）→ fallback chain（基于 enclosing symbol 直接调用图，低置信度）。
 
-覆盖率（AntennaPod）：87% 的 event_bindings 成功解析到 element_id。
+**element_id 解析**（ViewBinding 支持）：`findViewById` 显式映射 > camelCase→snake_case + XML id 验证 > 直接匹配。
 
-**effect_chain 结构**：
 ```json
 {
   "element_id": "butSave",
+  "view_ref": "butSave",
   "event_type": "click",
   "handler": {"method": "onCreate", "class": "MainActivity", "file": "...", "line": 42},
   "effect_chain": [
-    {"step": "navigate", "target": "finish", "destination": ""},
+    {"step": "navigate", "target": "finish"},
     {"step": "ui_update", "action": "setVisibility", "value": "gone"},
     {"step": "condition", "expr": "isValid()", "then": [...], "else": [...]}
   ],
   "chain_depth": 3,
   "confidence": "static_analysis",
-  "handler_resolution": {"strategy": "inline_lambda", "fallback_used": false}
+  "claim_hints": {"owner_classes": ["MainActivity"]}
 }
 ```
 
-`confidence` 直接复用行为链自身的置信度区分来源：
-- `static_analysis`：从明确 handler body 构建出的确定链
-- `fallback_analysis` / `inferred` / 其他非 `static_analysis`：推断链
-
-`behavior_chains.json.stats.by_confidence` 会聚合各 `confidence` 的数量，终端 `[4d]` 报告也基于这个字段输出确定类/推断类数量。
+`confidence` 区分来源：`static_analysis`（确定链）/ `fallback_analysis`（enclosing 调用图兜底）/ `pending_intent`（跨进程）/ `no_chain`（body 提取成功但无迁移相关效果，见 §8）。`stats.by_confidence` 聚合各级数量，终端 `[4d]` 据此输出。
 
 步骤类型：
+
 | step | 含义 | 关键字段 |
 |------|------|---------|
-| `navigate` | 页面跳转/返回 | `target`（startActivity/finish）, `destination` |
+| `navigate` | 页面跳转/返回 | `target`, `destination` |
 | `ui_feedback` | 用户反馈 | `action`（Toast/Snackbar/dismiss） |
-| `ui_update` | UI 状态更新 | `action`（setVisibility/setText）, `value` |
+| `ui_update` | UI 状态更新 | `action`, `value`, `text` |
 | `async` | 异步操作 | `target`（launch/enqueue） |
 | `call` | 普通方法调用 | `target`, `symbol_id`, `nested` |
 | `condition` | 条件分支 | `expr`, `then`, `else` |
 
-**共享未绑定控件推断**（`extractors/unbound_control_inference.py`）：
-- `build_layout_contexts(nav, adapter_layouts)`：一次构建 layout → owner/dialog/adapter 上下文，供 ground truth 与 spec 复用
-- `infer_unbound_event_bindings(static_elements, layout_contexts)`：为无 listener 的 interactive controls 生成低置信度 `inferred_event_bindings`
-- 推断 binding 复用既有 `confidence` 字段，统一标为 `inferred`
-- 每条推断 binding 都带 `claim_hints`（如 `owner_classes` / `screen_types` / `adapter_classes`），给后续 orphan chain claiming 直接复用
+覆盖率（AntennaPod）：386 bindings，with chain 360，no_chain 13，static_analysis 331。
 
+### 5.12 view_ref 解析工具 — `extractors/view_ref_utils.py`
 
-被 `ground_truth_builder` 和 `behavior_chain_extractor` 共同使用的 view 引用解析工具：
+被 ground_truth_builder 与 behavior_chain_extractor 共享：
+- `camel_to_snake(name)` — `drawerLayout` → `drawer_layout`（含字母↔数字边界）
+- `clean_view_ref(ref)` — 去 `binding.`/`viewBinding.` 前缀
+- `resolve_view_id(raw_ref, known_ids, file_ref_map)` — 多策略解析
 
-- `camel_to_snake(name)` — ViewBinding 命名转换：`drawerLayout` → `drawer_layout`
-- `clean_view_ref(ref)` — 去除 `binding.`/`viewBinding.` 等前缀
-- `resolve_view_id(raw_ref, known_ids, file_ref_map)` — 多策略解析 view 引用到 XML id
+### 5.13 其它基础模块
 
-### 4.11 Android 项目工具 — `extractors/android_project.py`
+- `extractors/android_project.py` — `source_files` / `res_dirs` / `manifests` / `_is_ignored`
+- `extractors/dependency_resolver.py` — 解析 `libs.versions.toml` JitPack 依赖与 `includeBuild`，下载到 `~/.cache/harmony-migration/deps/`
+- `extractors/bytecode_navigation.py` + `class_parser.py` — 从 `.class` 常量池补充导航（需已编译）
+- `extractors/ui_dag_assembler.py` — 从 launcher Activity 递归展开 UI DAG（max_depth=8），生成 `ui_dag.json` + `ui_paths.json`
+- `extractors/ui_paths_nav_enumerator.py` — 枚举可读导航链（上限 800）→ `ui_paths_enumerated.json`
+- `extractors/app_model_builder.py` — 分层 App 模型 `app_model/`（index / screens / features / paths / references）
 
-提供项目结构探测的基础函数：
+### 5.14 验证模块 — `verification/`（`--validate`）
 
-- `source_files(project_root)` — 收集 `src/main/**/*.java` 和 `*.kt`
-- `source_dirs(project_root)` — 返回源码根目录
-- `res_dirs(project_root)` — 返回资源目录列表
-- `manifests(project_root)` — 返回 AndroidManifest.xml 路径列表
-- `_is_ignored(path)` — 跳过 `.git`、`build`、`.gradle` 等目录
-
-### 4.12 依赖解析 — `extractors/dependency_resolver.py`
-
-自动下载 GitHub 依赖库源码：
-
-- 解析 `libs.versions.toml` 中的 JitPack 依赖（`com.github.Xxx:Yyy:commit`）
-- 解析 `settings.gradle.kts` 中的 `includeBuild` 本地路径
-- 下载到本地缓存 `~/.cache/harmony-migration/deps/`
-- 返回额外的源码根目录列表，供各提取器扫描
-
-### 4.13 字节码导航 — `extractors/bytecode_navigation.py`
-
-从编译后的 `.class` 文件提取导航关系（补充源码分析）：
-
-- 分析 JVM 常量池中的 `new Intent(ctx, XxxActivity.class)` → `startActivity`
-- 检测 `new XxxDialog()` 创建
-- 识别 Adapter 字段赋值
-- 需要项目已编译（`build/intermediates/javac/`）
-
-辅助模块 `extractors/class_parser.py` 提供纯 Python 的 `.class` 文件解析，无外部依赖。
-
-### 4.14 UI DAG 组装 — `extractors/ui_dag_assembler.py`
-
-**输入**：ground_truth + navigation_graph
-
-**输出**：`ui_dag.json`
-
-从 launcher Activity 出发，沿导航边递归展开，构建完整的 UI 导航有向无环图（DAG）。每个节点包含该屏幕的控件列表和导航关系。`max_depth=8` 防止无限递归。
-
-同时生成扁平化路径 `ui_paths.json`：每条路径是从 launcher 到叶子屏幕的一条导航链。
-
-### 4.15 导航路径枚举 — `extractors/ui_paths_nav_enumerator.py`
-
-从 `navigation_graph.json` 枚举短的导航链，生成人类可读的路径字符串：
-
-```
-Main > Settings Activity > Download Preferences
-Main > Nav Drawer > Subscription
-```
-
-输出 `ui_paths_enumerated.json`，上限 800 条路径。
-
-### 4.16 App Model 构建 — `extractors/app_model_builder.py`
-
-**输出**：`app_model/` 目录
-
-构建分层的 App 结构模型：
-- `index.json` — 总索引（版本、屏幕列表、Feature 列表、路径总数）
-- `screens/<layout>.json` — 每屏幕详情
-- `features/ft_<class>.json` — 每 Feature 详情（由类名推导）
-- `paths/all_paths.json` — 全部导航路径
-- `references/nav_edges.json` — 导航边索引
-- `references/ui_point_index.json` — 控件 ID 索引
-
-### 4.17 验证模块 — `verification/`
-
-可选（`--validate` 启用），交叉验证提取结果：
-
-- `manifest_verifier.py` — 检查提取到的 Activity 是否在 AndroidManifest.xml 中声明
-- `layout_verifier.py` — 检查 XML 中引用的 Fragment 是否存在对应的类
-- `bytecode_verifier.py` — 从字节码继承链验证 Fragment/Activity 分类是否正确
-- `report.py` — 汇总验证结果为 `verification_report.json`
+- `manifest_verifier.py` — 提取的 Activity 是否在 AndroidManifest 声明
+- `layout_verifier.py` — XML 引用的 Fragment 是否有对应类
+- `bytecode_verifier.py` — 从字节码继承链验证 Fragment/Activity 分类
+- `report.py` — 汇总 `verification_report.json`
 
 ---
 
-## 5. Spec 生成 — `generate_specs.py`
+## 6. Spec 生成 — `generate_specs.py`
 
-### 5.1 核心逻辑
+### 6.1 核心逻辑
 
-为每个布局文件生成一个 `{layout_name}_spec.json`，逻辑：
+为每个布局生成 `{layout}_spec.json`：按 layout 分组 static_elements → 反查 layout↔class → 收集导航出入边 → 合并 fragments / programmatic_views / behavior_chains / lifecycle_hooks / adapter_layouts → 附加 inferred bindings → 按渐进式披露顺序写出。
 
-1. 从 `ground_truth.static_elements` 按 layout 分组
-2. 从 `navigation_graph.class_layouts` 反查 layout → class 映射
-3. 查找该 class 的导航出边和入边
-4. 按 class_name 过滤 v1 behaviors（防止同名 id 跨文件污染）
-5. 合并 fragments、programmatic_views、behavior_chains、lifecycle_hooks、adapter_layouts
-6. 写入 spec 文件
+`_dedupe_layout_variants()` 处理 snake_case 转换差异（`media3_video` vs `media3video`）。
 
-### 5.2 布局去重
+### 6.2 Spec Schema（v2.2，字段按渐进式披露排序）
 
-`_dedupe_layout_variants()` 处理 snake_case 转换差异（如 `media3_video_player_activity` vs `media3video_player_activity`），按 underscore-collapsed 归一化后保留真实 XML 中存在的那个。
-
-### 5.3 effect_summary
-
-`_summarize_effects()` 将嵌套的 `effect_chain` 树扁平化为翻译相关的标签数组：
-
-```json
-["navigate:finish", "ui_feedback:Toast", "ui_update:setVisibility"]
-```
-
-只提取 `navigate`、`ui_feedback`、`ui_update`、`async` 四类，跳过通用 `call` 和 `condition`。
-
-### 5.4 Spec Schema（v2.2）
-
-渐进式披露设计：`brief` 供 LLM 快速了解页面，`ui`/`behavior` 供深入翻译时使用。`brief` 排在最前，LLM 读一屏即可决定是否深入。
+**`brief` 排在最前**，LLM 读一屏即可决定是否深入；`event_bindings` 内 `effect_summary` 排在 `effect_chain` 之前（先看压缩标签，再看完整树）。
 
 ```json
 {
-  // ── 摘要（LLM 最优先读取，排在最前） ──
+  // ── 摘要（LLM 最优先读取，最前） ──
   "brief": {
-    "interactive_controls": [
-      {"id": "btnSave", "type": "Button", "label": "Save",
-       "actions": ["navigate:finish", "ui_feedback:Toast"]}
-    ],
+    "interactive_controls": [{"id": "btnSave", "type": "Button", "label": "Save",
+                              "actions": ["navigate:finish", "ui_feedback:Toast"]}],
     "nav_in": ["SplashActivity (activity)"],
     "nav_out": ["→ SettingsActivity (menu settings)"],
-    "has_fragments": true,
-    "has_adapters": false,
+    "has_fragments": true, "has_adapters": false,
     "lifecycle_methods": ["onCreate", "onResume"]
   },
 
@@ -474,286 +354,238 @@ Main > Nav Drawer > Subscription
   "layout": "activity_main",
   "source": "project|library",
 
-  // ── 导航（完整出入口） ──
+  // ── 导航 ──
   "navigation": {
     "entry_points": [{"from": "SplashActivity", "trigger": "fn: onCreate", "type": "activity"}],
     "exit_points": [{"trigger": "menu settings", "destination": "SettingsActivity",
-                     "destination_layout": "settings_activity", "type": "activity",
-                     "via": "startActivity"}]
+                     "destination_layout": "settings_activity", "type": "activity", "via": "startActivity"}]
   },
 
   // ── UI（元素 + 布局树 + 动态加载） ──
   "ui": {
-    "elements": [{
-      "id": "btnSave",
-      "type": "Button",
-      "label": "Save",
-      "visibility": "always|conditional",
-      "condition": "if (isLoggedIn) {",
-      "is_interactive": true
-    },
-    {
-      "id": "includeRadio",
-      "type": "RadioButton",
-      "label": "Include only...",
-      "visibility": "always",
-      "condition": "",
-      "is_interactive": true
-    }],
+    "elements": [{"id": "btnSave", "type": "Button", "label": "Save",
+                  "visibility": "always|conditional", "condition": "", "is_interactive": true}],
     "tree": {"tag": "LinearLayout", "id": "", "children": [...]},
-    "inflated_layouts": [{
-      "source": "inflate_layout|inflate_binding",
-      "layout": "activity_main",
-      "enclosing_fn": "...",
-      "file": "..."
-    }],
-    "programmatic_views": [{"view_type": "TextView", "creation_method": "addView",
-                            "container_id": "dynamicContainer", "properties": {}}]
+    "inflated_layouts": [{"source": "inflate_layout", "layout": "activity_main", "enclosing_fn": "...", "file": "..."}],
+    "programmatic_views": [{"view_type": "TextView", "creation_method": "addView", "container_id": "..."}]
   },
 
   // ── 行为（事件 + 生命周期 + fragment + adapter） ──
   "behavior": {
     "event_bindings": [{
-      "element_id": "btnSave",
-      "event_type": "click",
-      "handler_method": "onCreate",
+      "element_id": "btnSave", "event_type": "click", "handler_method": "onCreate",
       "effect_summary": ["navigate:finish", "ui_feedback:Toast"],
-      "effect_chain": [{"step": "navigate", "target": "finish"},
-                       {"step": "ui_feedback", "action": "Toast"}],
+      "effect_chain": [{"step": "navigate", "target": "finish"}, {"step": "ui_feedback", "action": "Toast"}],
       "chain_depth": 2
-    }, {
-      // 合成 event_binding：dialog 中值输入控件，无独立 listener
-      "element_id": "includeRadio",
-      "event_type": "value_change",
-      "handler_method": "onPositiveClick",
-      "effect_chain": [],
-      "effect_summary": ["value_read:on_dialog_confirm"],
-      "chain_depth": 0
-    }, {
-      // 合成 event_binding：adapter item 内控件，handler 在 adapter 类
-      "element_id": "btnPlayItem",
-      "event_type": "click",
-      "handler_method": "onBindViewHolder",
-      "effect_chain": [],
-      "effect_summary": ["adapter_bindview:EpisodeAdapter.onBindViewHolder"],
-      "chain_depth": 0
     }],
     "lifecycle_hooks": {"onCreate": ["initView"], "onResume": ["refreshData"]},
-    "fragments": [{"class": "SettingsFragment", "container_id": "fragment_container",
-                   "attach_method": "FragmentTransaction.replace"}],
-    "adapter_bindings": [{"container_id": "recyclerView", "adapter_class": "MyAdapter",
-                          "item_layout": "item_row"}]
+    "fragments": [{"class": "SettingsFragment", "container_id": "fragment_container", "attach_method": "FragmentTransaction.replace"}],
+    "adapter_bindings": [{"container_id": "recyclerView", "adapter_class": "MyAdapter", "item_layout": "item_row"}]
   },
 
-  "stats": {
-    "conditional_visibility": 2,
-    "inflated_layouts": 1,
-    "nav_out": 3,
-    "nav_in": 2,
-    "fragments": 1,
-    "programmatic_views": 0,
-    "event_bindings": 12,
-    "event_bindings_with_chain": 5
-  }
+  "stats": {"conditional_visibility": 2, "inflated_layouts": 1, "nav_out": 3, "nav_in": 2,
+            "fragments": 1, "programmatic_views": 0, "event_bindings": 12, "event_bindings_with_chain": 5}
 }
 ```
 
-v2.2 相比 v2.1 的变化：
-- **合并** `ui_elements`（顶层）+ `structure.ui_tree` + `dynamic_ui` + `structure.dynamic_elements` → `ui` 下四个子字段
-  - `ui.elements` — 扁平控件列表
-  - `ui.tree` — XML 布局树
-  - `ui.inflated_layouts` — inflate 加载的布局（原 `dynamic_ui`）
-  - `ui.programmatic_views` — 代码创建的 View（原 `structure.dynamic_elements`）
-- **移动** `structure.fragments` → `behavior.fragments`（fragment 挂载是运行时行为）
-- **删除** `structure` 外壳 — 内容分散到 `ui` 和 `behavior`
-- **前移** `navigation` — 紧跟 `brief` 之后，LLM 更早获得上下文
-- **stats 键名同步** — `dynamic_gaps` → `inflated_layouts`，`dynamic_elements` → `programmatic_views`
-- **字段排序** — 摘要(brief) → 身份 → 导航 → UI → 行为 → 统计；`brief` 提至最前，`event_bindings` 内 `effect_summary` 排在 `effect_chain` 之前
-- **新增** 合成 event_binding — interactive 控件无 listener 时自动生成 event_binding，按场景分类：
-  - `value_read:on_dialog_confirm` — dialog 内的值输入控件（CheckBox/EditText/Spinner），值在确认按钮 handler 中被读取
-  - `ui_feedback:dismiss_dialog` — dialog 内的 Button（通常是取消/关闭）
-  - `adapter_bindview:{Adapter}.onBindViewHolder` — item 布局控件，handler 在 adapter 的 onBindViewHolder 中
-  - `framework:TabLayout.setupWithViewPager` 等 — 框架托管控件（TabLayout/ViewPager/RecyclerView/ScrollView）
-  - `programmatic:handler_in_code` — 兜底，handler 存在但静态分析无法追踪
-- **新增** 链式 `findViewById(R.id.xxx).setOnXxxListener(` 检测 — 提升事件注册覆盖率
-- **新增** 局部变量→R.id 追踪 — `var = yyy.findViewById(R.id.xxx)` 后 `var.setOnXxxListener`
-- **过滤** `remove*` 调用、`setXxxListener(null)`、PendingIntent 标记（`is_pending_intent`）
+**合成 event_binding**：interactive 控件无 listener 时按 §5.10 分类自动生成（`value_read:on_dialog_confirm` / `ui_feedback:dismiss_dialog` / `adapter_bindview:{Adapter}.onBindViewHolder` / `framework:TabLayout.setupWithViewPager` / `programmatic:handler_in_code`）。
 
-### 5.5 screen_index.json — 全局索引
+### 6.3 effect_summary
 
-`generate_specs` 完成后自动生成 `screen_index.json`，LLM 读此一个文件即可了解 App 全貌：
+`_summarize_effects()` 把嵌套 `effect_chain` 树扁平化为翻译相关标签 `["navigate:finish", "ui_feedback:Toast", "ui_update:setVisibility"]`。只取 `navigate`/`ui_feedback`/`ui_update`/`async`，跳过通用 `call`/`condition`。
+
+### 6.4 Behavior chain 分配到 spec
+
+`generate_specs` 将全局 behavior_chains 分配到各 screen spec，匹配条件（OR，优先确定性）：
+
+1. `element_id ∈ layout_ids` — chain 目标控件在当前 layout 的 XML 元素集
+2. `claim_hints.owner_classes ∩ owner_classes` — handler 所在类（含内部类→外部类 `Foo$1`→`Foo`）属于当前 spec owner 集
+3. `handler_class ∈ layout_to_classes[layout]` — 当前 spec 无 class，但 handler_class 的 layout 映射到当前 layout
+4. `layout ∈ class_to_layout_set[owner_class]` — owner_class 反查匹配（含 adapter_class→item_layout、**inflate 派生映射**）
+
+`class_to_layout_set` 的确定性数据源：`class_layouts`（已并入 inflate 派生映射）、nav nodes、`adapter_layouts`。
+
+终端输出（[7/7]）：
+```
+Binding assignment: 385 chains → 340 assigned, 45 orphan, 105 duplicated
+Fallback claimed: 5 (handler_class→layout)
+Synthetic: 24 (cross-component)
+Total event_bindings in specs: 469
+```
+- **orphan**：分配不到任何 spec 的 chain（见 §8.2）
+- **duplicated**：被多个 spec 收走（element_id 在多 layout 存在，如 include 复用）
+- **synthetic**：无 listener 控件合成的 binding（不来自 behavior_chains）
+- **fallback_claimed**：通过 handler_class→layout 反查兜底认领
+
+### 6.5 screen_index.json — 全局索引
+
+`generate_specs` 完成后生成，LLM 读此一个文件即可了解 App 全貌：
 
 ```json
-{
-  "total_screens": 177,
-  "screens": [
-    {
-      "layout": "activity_main",
-      "class": "MainActivity",
-      "type": "activity",
-      "controls": 15,
-      "interactive": 8,
-      "event_bindings": 12,
-      "nav_in": ["SplashActivity (activity)"],
-      "nav_out": ["→ SettingsActivity (menu settings)"],
-      "tags": ["navigate:startActivity", "ui_feedback:Snackbar"],
-      "spec_file": "activity_main_spec.json"
-    }
-  ]
-}
+{"total_screens": 177,
+ "screens": [{"layout": "activity_main", "class": "MainActivity", "type": "activity",
+              "controls": 15, "interactive": 8, "event_bindings": 12,
+              "nav_in": [...], "nav_out": [...], "tags": ["navigate:startActivity"],
+              "spec_file": "activity_main_spec.json"}]}
 ```
 
-### 5.6 渐进式披露工作流
+### 6.6 渐进式披露工作流
 
 ```
 LLM 翻译工作流：
-  1. 读 screen_index.json   → 了解 App 全貌，规划 feature 分组
-  2. 读 spec.brief           → 了解单页面概览：控件 + 行为标签 + 导航
-  3. 读 spec.ui/behavior     → 翻译时获取完整 ui_tree、effect_chain、fragments
+  1. 读 screen_index.json   → App 全貌，规划 feature 分组
+  2. 读 spec.brief           → 单页概览：控件 + 行为标签 + 导航
+  3. 读 spec.ui / behavior   → 翻译时取完整 ui.tree、effect_chain、fragments
 ```
+
+### 6.7 字段顺序在流水线中的保持
+
+Stage 0 把 spec 写入临时目录后，`stages/stage0_run_spec_tools.py::_normalize_dir_facts_dir` 会做一次**路径归一化**（把绝对路径替换为相对 posix 路径）。该步**必须保持各文件的原始 key 顺序**——它只重写路径字符串，不重排 key。早期实现误用 `sort_keys=True` 把所有 facts JSON 按字母排序（`behavior` 排到 `brief` 前），破坏了渐进式披露顺序；现已改为顺序保持序列化。产物仍确定（同一次扫描 → 同一 dict 顺序 → 同一字节）。
 
 ---
 
-## 6. 输出文件清单
+## 7. 输出文件清单
 
 | 文件 | 大小（AntennaPod） | 用途 |
 |------|-------------------|------|
-| `static_xml.json` | 738KB | XML 控件原始数据 |
-| `source_findings.json` | 680KB | 源码扫描的语义模式 |
-| `function_symbols.json` | 2.5MB | 函数符号表 |
-| `call_graph.json` | 12.8MB | 调用图（最大文件） |
-| `ground_truth.json` | 546KB | XML + 源码合并后的完整事实 |
-| `navigation_graph.json` | 108KB | 屏幕导航图 |
-| `navigation_candidates.json` | 19KB | L1 导航候选 |
-| `fragments.json` | 78KB | Fragment 检测结果 |
-| `dynamic_ui.json` | 3KB | 动态 UI + Adapter |
-| `behavior_chains.json` | 661KB | 事件→效果链 |
-| `ui_dag.json` | 43KB | 从 launcher 出发的 UI 树 |
-| `ui_paths.json` | 601KB | 扁平化导航路径 |
-| `ui_paths_legacy.json` | 27KB | 人类可读路径字符串 |
-| `ui_paths_report.json` | 103KB | 路径报告（含 display_report） |
-| `ui_paths_enumerated.json` | 3KB | 枚举路径（上限 800） |
-| `ui_effect_paths.json` | 320B | 效果路径 |
-| `specs/*.json` | 1.5MB 共 177 个 | 每屏幕 migration spec |
+| `static_xml.json` | ~740KB | XML 控件原始数据 |
+| `source_findings.json` | ~680KB | 源码扫描的语义模式 |
+| `function_symbols.json` | ~2.5MB | 函数符号表 |
+| `call_graph.json` | ~13MB | 调用图（最大文件） |
+| `ground_truth.json` | ~550KB | XML + 源码合并事实 + 推断 binding |
+| `navigation_graph.json` | ~110KB | 屏幕导航图（含 inflate 派生 class_layouts） |
+| `navigation_candidates.json` | ~19KB | L1 导航候选 |
+| `fragments.json` | ~78KB | Fragment 检测结果 |
+| `dynamic_ui.json` | ~3KB | 动态 UI + Adapter |
+| `behavior_chains.json` | ~1.9MB | 事件→效果链 |
+| `ui_dag.json` / `ui_paths*.json` | — | UI 导航树与路径 |
+| `specs/*.json` | ~177 个 | 每屏幕迁移 spec |
 | `screen_index.json` | ~50KB | 全局屏幕索引（LLM 概览） |
 | `app_model/` | ~1MB | 分层 App 模型 |
-| `verification_report.json` | — | 交叉验证报告（--validate） |
+| `verification_report.json` | — | 交叉验证（--validate） |
 
 ---
 
-## 7. 关键算法与设计决策
+## 8. 覆盖率边界与未能分析的原因
 
-### 7.1 ViewBinding camelCase → snake_case 解析
+静态分析存在不可消除的边界。本节基于 AntennaPod 实测数据，逐一说明**剩余未覆盖项的根因**，并区分「**应当留空**」（语义上本就无可迁移信息）与「**静态原理受限**」（需运行时/数据流分析才能解，超出纯静态范围）。**这些都不应通过针对性正则强行提高覆盖率**——那只会制造虚假事实，误导下游翻译。
 
-Android ViewBinding 将 XML `id` 转换为 camelCase 属性名：`drawer_layout` → `binding.drawerLayout`。源码中的 `view_ref` 是 camelCase，XML 中是 snake_case。
+### 8.1 无法提取 effect chain 的事件绑定（`no_chain`，AntennaPod 13 个）
 
-`view_ref_utils.camel_to_snake()` 做反向转换：
-- 在小写字母→大写字母边界插入下划线：`drawerLayout` → `drawer_Layout` → `drawer_layout`
-- 在字母→数字边界插入下划线：`media3Video` → `media3_Video` → `media3_video`
+这些 handler 的 body **成功提取**了，但展开后没有任何迁移相关的 step。分三类，**全部应当留空**：
 
-匹配优先级：`findViewById` 显式映射 > snake_case 转换 + XML id 验证 > 直接匹配。
+| 类别 | 数量 | 典型 body | 为何留空 |
+|------|------|-----------|---------|
+| 返回字面量 | 3 | `return false` / `true` | OnLongClick/OnTouch 仅消费事件返回布尔，无副作用 |
+| 纯状态赋值 | 5 | `longPressedItem = item;` | 只改成员字段，无 UI/导航效果；字段如何被消费属运行时数据流 |
+| 其它非效果 | 5 | `toolbar.setNavigationIcon(null)` | 调用被 classify 为通用 `call`，且无下游可追踪效果 |
 
-### 7.2 Fragment 宿主检测的 AST 数据流分析
+**根因**：`classify_call` 只把明确的 navigate/ui_feedback/ui_update/async 计为效果。纯赋值不是调用，事件消费型返回值不产生 UI 变化。这类 handler 在鸿蒙侧通常也无对应可迁移行为，强行编造 step 反而有害。
 
-`fragment_detector._resolve_fragment_arg()` 从 FragmentTransaction.replace/add 的参数位置出发，追踪数据流以确定实际的 Fragment 类名：
+> 已修复的**假性** no_chain：早期版本因调用提取正则丢弃成员调用（`view.setText(...)`），把 80 个**本应有链**的 handler 误判为空。现捕获成员调用 + Kotlin 属性式变更后降到 13 个真·空链。
 
-```
-transaction.replace(R.id.container, fragment)
-                                      ↓
-                        val fragment = SomeFragment()     // 直接实例化
-                        val fragment = X.newInstance()     // 工厂方法
-                        val fragment = getFragment(type)   // 方法返回值
-```
+### 8.2 分配不到任何 spec 的 chain（`orphan`，AntennaPod 45 个）
 
-支持 switch-case 工厂模式（when 分支返回不同 Fragment）和 .show() 调用中嵌套构造函数参数的解析。
+chain 提取成功，但其 owning class 不映射到任何带 layout 的屏幕。按 handler 类性质分（实测 43 个可定位类）：
 
-### 7.3 effect_chain 的调用图遍历
+| 类别 | 数量 | 代表类 | 性质 |
+|------|------|--------|------|
+| 服务/控制器/辅助类 | 37 | `WidgetUpdater` `LocalPSMP` `PlaybackController` `ExoPlayerWrapper` `ShakeListener` `Media3PlaybackService` `EmptyViewHandler` `LiftOnScrollListener` | **非屏幕**：后台播放、widget 更新、传感器监听、滚动行为。它们注册的 listener 不绑定到某个可见 layout，**本就不该进任何 screen spec** |
+| Adapter 内 listener | 5 | `EpisodeItemListAdapter` `PlaybackStatisticsListAdapter` | item 内控件 listener。若该 adapter 的 `item_layout` 关联缺失（dynamic_ui 未检出），则无法定位 item 布局 |
+| 真·屏幕但无 layout | 1 | `PagedToolbarFragment` | 抽象/基类 Fragment，自身不 inflate 具体布局（由子类提供），故无 class→layout 映射 |
 
-`behavior_chain_extractor` 对每个事件注册：
-1. 找到 handler 所在函数的符号（通过 function_symbols）
-2. 从 call_graph 中找到该函数调用的所有方法
-3. 对每个被调用方法，分类为 navigate/ui_feedback/ui_update/async/call
-4. 如果是 call，递归展开（最多 3 层），生成嵌套的 `nested` 字段
-5. 检测 handler 体中的 if/when 分支，生成 `condition` 步骤
-6. handler body 恢复按分层策略执行：inline lambda → method reference → callback variable → anonymous listener → shallow fallback
+**根因**：
+- 服务类 orphan 是**正确行为**——它们是 App 的非 UI 逻辑，不属于任何屏幕。把它们塞进某个 spec 才是错误。
+- Adapter orphan 受限于 `dynamic_ui` 的 `setAdapter` 检测：当 adapter 实例化与 `setAdapter` 调用跨方法/跨文件，或经工厂构造时，host↔item_layout 关联断裂。补全需要**跨过程数据流分析**，超出当前单文件正则+调用图的范围。
+- 抽象基类 Fragment 无自有布局，是 Android **运行时多态**结构，静态无法在基类侧确定具体 layout。
 
-[4d] 输出除 `Bindings / with chain / no handler` 外，还包含：
-- `Handler resolution`：各恢复策略/失败原因计数
-- `Fallback chain`：无法提取 body 时，基于 enclosing symbol 直接调用图生成的低置信度 chain 数
+### 8.3 完全没有找到行为绑定的控件（unbound interactive，AntennaPod 24 个，7 个未覆盖）
 
-### 7.4 Behavior chain 分配到 spec
+interactive 控件在 XML 中存在，但源码无对应 `setOnXxxListener`。`unbound_control_inference` 按场景推断了 17 个（dialog_action 5 / value_read_on_confirm 10 / framework_managed 2），剩 **7 个 `programmatic`** 兜底类未能确定 handler。
 
-`generate_specs` 将全局 behavior_chains（来自 [4d]）分配到各 screen spec：
+**根因**（programmatic 类未覆盖）：
+- handler 通过**数据绑定（DataBinding `@{...}` 表达式）**或 **Compose/运行时反射**关联，静态正则不可见
+- listener 在**基类/Mixin**中统一注册，子类布局的控件经继承获得行为——需跨类继承链的数据流
+- 控件实际由**库内部**消费（自定义 View 自带交互），项目源码层面无注册点
 
-匹配条件（四条 OR，优先确定性）：
-1. `element_id ∈ layout_ids` — chain 的目标控件在当前 layout 的 XML 元素集中
-2. `claim_hints.owner_classes ∩ owner_classes` — handler 所在类（含内部类→外部类解析）属于当前 spec 的 owner 集合
-3. `handler_class ∈ layout_to_classes[layout_name]` — 当前 spec 无 class_name，但 handler_class 的 layout 映射到当前 layout
-4. `layout_name ∈ class_to_layout_set[owner_class]` — claim_hints 中任一 owner_class 通过 class→layout 反查匹配到当前 layout（含 adapter_class→item_layout 关联）
+这类控件已标 `confidence: inferred` + `inference_category: programmatic` + `effect_summary: ["programmatic:handler_in_code"]`，**明确告知下游"有交互但 handler 不可静态定位"**，而非伪造一个 effect。
 
-注意：条件 2 的 `owner_classes` 由 `_derive_owner_classes()` 生成，`Foo$1` 自动解析为 `[Foo$1, Foo]`，无需推断。`class_to_layout_set` 包含三个确定性数据源：`class_layouts`、nav nodes、`adapter_layouts`（adapter_class→item_layout 和 host_class→item_layout）。
+### 8.4 screen_type=unknown 的 layout（AntennaPod ~50 个）
 
-分配结果透明化输出（[7/7]）：
-```
-Binding assignment: 386 chains → 380 assigned, 6 orphan, 12 duplicated
-Fallback claimed: 8 (handler_class→layout)
-Synthetic: 25 (cross-component)
-Total event_bindings in specs: 417
-```
+这些 layout 有控件但无 class→layout 映射，分两类：
 
-- **orphan**：分配不到任何 spec 的 chain（element_id 解析失败 + handler_class 无 layout 映射）
-- **duplicated**：被多个 spec 收走的 chain（element_id 在多个 layout 中存在，如 include 复用）
-- **synthetic**：无 listener 的 interactive 控件合成的 event_binding（不来自 behavior_chains）
-- **fallback_claimed**：通过 handler_class→layout 反查 fallback 成功认领的 chain 数
+- **include 片段 / 子组件布局**：`feeditemlist_header`、`feeditemlist_item`、`empty_view_layout`、`audio_controls`、`feed_statistics_card` 等。它们经 `<include>` 或作为 item/子 View 复用，**没有独立宿主类**——这是 Android 布局复用机制的固有特征，本就不对应单一屏幕。
+- **库内/抽象布局**：由库或基类持有，项目侧无 inflate 点可锚定。
 
-### 7.5 Spec 防膨胀
+§5.7 的 inflate 派生映射已把能确定 owner 的（如 `fragment_online_search`→`DiscoveryFragment`）补全（unknown 60→50）；剩余的确实没有确定性所有权信号。
 
-当 `class_name == ""` 时（布局无法映射到具体类），以下三个过滤条件会退化为全量匹配：
-- `"".find("") == 0` 总为 True → 所有 behavior_chains 被塞入 spec
-- `"" == ""` 总为 True → 所有空 host 的 fragments 被塞入 spec
+### 8.5 边界总结
 
-修复：所有匹配条件前加 `class_name and` 守卫。修复后产物从 32MB 降至 1.5MB。
+| 现象 | 应当留空（语义无信息） | 静态原理受限（需运行时/数据流） |
+|------|----------------------|-------------------------------|
+| no_chain | ✅ 返回字面量、纯状态赋值 | — |
+| orphan | ✅ 服务/控制器/辅助类 | Adapter 跨过程 host 关联、抽象基类多态布局 |
+| unbound control | — | ✅ DataBinding/继承/库内消费 |
+| unknown screen_type | ✅ include 片段/子组件布局 | 库内/抽象布局所有权 |
+
+**结论**：剩余未覆盖项中，相当一部分是**语义上本就不该有可迁移信息**的（强行覆盖即制造噪声）；另一部分需要跨过程数据流或运行时信息，已用 `confidence`/`inference_category`/orphan 统计**显式标注边界**，把"不确定"如实传递给下游，而非用脆弱正则掩盖。
 
 ---
 
-## 8. 开发约定
+## 9. 关键算法与设计决策
 
-- **小步提交**：每个功能点单独 commit
-- **复用优先**：共享逻辑提取到 `view_ref_utils.py` 等公共模块
-- **v1 兼容**：v1 冗余字段已删除（behaviors、screen_id），v2 是唯一 schema
-- **字段排序**：spec dict 按渐进式披露顺序构建（brief → 身份 → 导航 → UI → 行为 → 统计；`brief` 最前）
-- **tree-sitter 可选**：所有使用 AST 的模块在 tree-sitter 不可用时回退到正则
-- **误报抑制**：多层过滤（PascalCase 类型名、系统对象、首字母大写检查等）
-- **产物可审计**：每个中间 JSON 文件独立可读，便于调试
+### 9.1 ViewBinding camelCase → snake_case 解析
+
+Android ViewBinding 将 XML `id` 转为 camelCase 属性名（`drawer_layout` → `binding.drawerLayout`）。`camel_to_snake()` 反向转换：小写→大写边界、字母→数字边界插入下划线。匹配优先级：`findViewById` 显式映射 > snake_case 转换 + XML id 验证 > 直接匹配。
+
+### 9.2 Handler body 提取捕获成员调用
+
+`_extract_calls_from_body(body, include_members=True)` 对直接 handler body 捕获 `obj.foo(` 形式的成员调用，恢复了大量"全是成员调用"的 handler（`view.setText`/`launcher.launch`/`recyclerView.post`）。深层调用图递归保持非限定调用，避免外部库叶子调用淹没链路。配合 `_extract_property_mutations` 处理 Kotlin 属性式 UI 变更。
+
+### 9.3 inflate 派生 class→layout 的确定性
+
+「类 inflate 布局」是比命名启发式强得多的所有权信号。`inflate_owner_map` 用已提取的 `enclosing_symbol_id` join 符号表，纯函数、无重复扫描，仅填导航未覆盖的类，作 1:1 主映射避免 chain 重复认领（详见 §5.7）。
+
+### 9.4 Spec 防膨胀
+
+当 `class_name == ""` 时，所有 `"".find("")==0` / `""==""` 条件恒真会把全部 chain/fragment 塞入 spec。修复：所有匹配条件前加 `class_name and` 守卫，产物从 32MB 降至 1.5MB。
+
+### 9.5 字段顺序的端到端保持
+
+spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归一化改为顺序保持序列化（§6.7），保证 LLM 看到的最终产物 `brief` 在最前。
 
 ---
 
-## 9. 修改日志
+## 10. 开发约定
 
-| 日期 | 变更 | 相关 commit |
-|------|------|------------|
-| 2026-05-30 | Fragment 宿主检测：6/84 → 79/84 (94%)，新增 9 种检测模式 | a1fe215, 87bf752, f4c8b51, 995193f |
-| 2026-05-30 | 修复 spec 膨胀：32MB → 1.5MB，守卫空 class_name | e0ddf6d |
-| 2026-05-30 | 过滤函数名误判为 Dialog（`showErrorDialog` 等） | 24eb581 |
-| 2026-05-30 | 去重 snake_case 变体 spec（media3 等） | 64c9cc5 |
-| 2026-05-30 | ViewBinding element_id 解析：0% → 87% | 8532fea |
-| 2026-05-30 | 添加 effect_summary 标签到 event_bindings | e76f51d |
-| 2026-05-30 | 提取共享 view_ref_utils 模块 | 655b02f |
-| 2026-05-30 | 修复 v1 behaviors 跨文件污染：按 class_name 过滤文件来源 | eb8551a |
-| 2026-05-30 | 支持箭头 lambda（`v -> expr()`）的 handler body 提取 | 984a95f |
-| 2026-05-30 | 扩展 findViewById 映射正则以支持 Java 字段赋值 | c5ee72e |
-| 2026-05-30 | 去重 lifecycle_hooks 中重复的 callee 方法名 | 04d7ecd |
-| 2026-05-30 | Spec v2.1：删除冗余 v1 字段，新增 brief 摘要层，生成 screen_index.json | e8ed2ae, 148d121, 3ccd7d8 |
-| 2026-05-30 | 重构 spec 字段：L0_structure→structure、L1_behavior→behavior、删除 spec_version、按渐进式披露排序 | — |
-| 2026-05-30 | Spec v2.2：消除概念重复，合并 ui_elements/dynamic_ui/structure → ui，fragments 移入 behavior，navigation 前移 | — |
-| 2026-06-01 | 事件注册检测增强：链式 findViewById + 局部变量追踪 + 过滤 null/remove/PendingIntent | — |
-| 2026-06-01 | 消除 binding_hint：为未绑定 interactive 控件合成 event_binding（value_read/dialog_action/adapter_bindview/framework/programmatic） | — |
-| 2026-06-02 | Behavior chain 分配对齐：handler_class 匹配减少 orphan，终端输出 assigned/orphan/duplicated/synthetic 统计 | — |
-| 2026-06-02 | Handler 恢复增强：event_registration 增加 callback metadata，支持 method_ref/callback_var/anonymous_listener/fallback_chain 统计 | — |
-| 2026-06-02 | by_confidence 统计：JSON 输出和终端报告区分 static_analysis / fallback_analysis / inferred 三级置信度 | — |
-| 2026-06-03 | 共享未绑定控件推断层：unbound_control_inference.py，ground_truth 产出 inferred_event_bindings，spec 消费 claim_hints | — |
-| 2026-06-03 | Orphan chain fallback claiming：handler_class→layout 反查第四条匹配，终端输出 fallback_claimed 统计 | — |
-| 2026-06-03 | Orphan claiming 确定性提升：内部类→外部类解析（`Foo$1`→`Foo`）+ adapter_class→item_layout 扩展 class_to_layout_set + chain 携带 claim_hints | — |
-| 2026-06-03 | Handler body 提取成员调用 + Kotlin 属性式 UI 变更：no_chain 80→13，with-chain 293→360 | — |
-| 2026-06-03 | inflate 派生 class→layout（inflate_owner_map）：orphan 53→45，unknown screen_type 60→50，新增 18 映射 | — |
-| 2026-06-03 | Spec 字段重排：brief 提至最前，event_bindings 内 effect_summary 先于 effect_chain | — |
+- **小步提交**：每个功能点单独 commit，附覆盖率前后对比
+- **复用优先**：共享逻辑提取到 `view_ref_utils.py` / `unbound_control_inference.py` / `inflate_owner_map.py` 等公共模块
+- **确定性优先**：见 §2，推断结果永远带 `confidence` 标记并可与确定结果区分
+- **泛化**：禁止针对单一仓硬编码 id/类名；覆盖率提升须来自通用语言/框架模式
+- **边界透明**：无法分析的项用 orphan/uncovered/inferred 统计如实暴露，不用脆弱正则掩盖（见 §8）
+- **v2 唯一 schema**：v1 冗余字段已删除
+- **同步更新本文档**：每次代码改动一并更新 ARCHITECTURE.md
+
+---
+
+## 11. 修改日志
+
+| 日期 | 变更 |
+|------|------|
+| 2026-05-30 | Fragment 宿主检测：6/84 → 79/84（94%），新增 9 种检测模式 |
+| 2026-05-30 | 修复 spec 膨胀：32MB → 1.5MB，守卫空 class_name |
+| 2026-05-30 | ViewBinding element_id 解析：0% → 87% |
+| 2026-05-30 | 提取共享 view_ref_utils 模块；effect_summary 标签 |
+| 2026-05-30 | Spec v2.1/v2.2：删冗余 v1 字段，新增 brief，合并 ui/dynamic/structure，navigation 前移 |
+| 2026-06-01 | 事件注册增强：链式 findViewById + 局部变量追踪 + 过滤 null/remove/PendingIntent |
+| 2026-06-01 | 为未绑定 interactive 控件合成 event_binding |
+| 2026-06-02 | Behavior chain 分配对齐：handler_class 匹配减少 orphan；终端 assigned/orphan/duplicated/synthetic 统计 |
+| 2026-06-02 | Handler 恢复增强：callback metadata，支持 method_ref/callback_var/anonymous_listener/fallback_chain |
+| 2026-06-02 | by_confidence 三级置信度统计 |
+| 2026-06-03 | 共享未绑定控件推断层 unbound_control_inference.py；ground_truth 产出 inferred_event_bindings |
+| 2026-06-03 | Orphan claiming：内部类→外部类解析 + adapter_class→item_layout + chain 携带 claim_hints |
+| 2026-06-03 | Handler body 提取成员调用 + Kotlin 属性式 UI 变更：no_chain 80→13，with-chain 293→360 |
+| 2026-06-03 | inflate 派生 class→layout（inflate_owner_map）：orphan 53→45，unknown screen_type 60→50，新增 18 映射 |
+| 2026-06-03 | Spec 字段重排：brief 提至最前，event_bindings 内 effect_summary 先于 effect_chain |
+| 2026-06-03 | 修复 Stage 0 路径归一化误用 sort_keys 破坏 spec 字段顺序；改为顺序保持序列化 |
+| 2026-06-03 | 文档重写：补充覆盖率边界与未能分析项的根因分析（§8） |
