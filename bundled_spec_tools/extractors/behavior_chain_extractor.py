@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from collections import defaultdict
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Layer 1 — Step Pipeline (reusable core, no Android specifics)
@@ -334,7 +335,26 @@ def _build_flat_chain(
 # Layer 2 — Body Parser (text → structured segments, no call-graph dependency)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Member calls (`obj.foo(`) are captured only for the *direct* handler body, where
+# they represent the handler's own effects (`view.setText(...)`, `launcher.launch(...)`).
+# Deep call-graph recursion stays unqualified-only to avoid flooding chains with
+# external library leaf calls.
 _METHOD_CALL_RE = re.compile(r'(?:^|[^\w.])(\w+)\s*\(', re.MULTILINE)
+_MEMBER_CALL_RE = re.compile(r'(\w+)\s*\(', re.MULTILINE)
+
+# Kotlin/Android property-style UI mutations (`view.isVisible = false`,
+# `label.text = "..."`). These are assignments, not calls, so the call regex
+# never sees them; map them to the same ui_update step types as their
+# setVisibility/setText method-call equivalents.
+_PROPERTY_MUTATION_RE = re.compile(
+    r'\.(isVisible|visibility|isGone|text|isEnabled|isChecked|isSelected|alpha)\s*='
+    r'(?!=)',
+)
+_PROPERTY_TO_ACTION = {
+    "isVisible": "setVisibility", "visibility": "setVisibility", "isGone": "setVisibility",
+    "text": "setText", "isEnabled": "setEnabled",
+    "isChecked": "setChecked", "isSelected": "setSelected", "alpha": "setAlpha",
+}
 
 _SKIP_CALLS = frozenset({
     "if", "for", "while", "when", "switch", "catch", "return",
@@ -343,16 +363,38 @@ _SKIP_CALLS = frozenset({
 })
 
 
-def _extract_calls_from_body(body: str) -> list[str]:
-    """Extract simple method call names from body text."""
+def _extract_calls_from_body(body: str, include_members: bool = False) -> list[str]:
+    """Extract simple method call names from body text.
+
+    With include_members=True, also captures member calls (`obj.foo(`); used for
+    the direct handler body. Deep recursion keeps the default (unqualified only).
+    """
     calls = []
     seen = set()
-    for m in _METHOD_CALL_RE.finditer(body):
+    regex = _MEMBER_CALL_RE if include_members else _METHOD_CALL_RE
+    for m in regex.finditer(body):
         name = m.group(1)
         if name not in _SKIP_CALLS and name not in seen and not name[0].isupper():
             seen.add(name)
             calls.append(name)
     return calls
+
+
+def _extract_property_mutations(body: str) -> list[dict]:
+    """Detect Kotlin/Android property-style UI mutations and build ui_update steps."""
+    steps: list[dict] = []
+    seen: set[str] = set()
+    for m in _PROPERTY_MUTATION_RE.finditer(body):
+        prop = m.group(1)
+        if prop in seen:
+            continue
+        seen.add(prop)
+        steps.append({
+            "step": "ui_update",
+            "action": _PROPERTY_TO_ACTION[prop],
+            "confidence": "static_analysis",
+        })
+    return steps
 
 
 _CONDITION_RE = re.compile(
@@ -537,7 +579,7 @@ def build_chain_from_segments(
     chain = []
     for seg in segments:
         if seg["type"] == "plain":
-            call_names = _extract_calls_from_body(seg["text"])
+            call_names = _extract_calls_from_body(seg["text"], include_members=True)
             for name in call_names:
                 step = build_step_for_call(
                     name, seg["text"], handler_class,
@@ -545,6 +587,9 @@ def build_chain_from_segments(
                     source_lines, depth, max_depth, visited, step_counter,
                 )
                 chain.append(step)
+            for prop_step in _extract_property_mutations(seg["text"]):
+                step_counter["ui_update"] = step_counter.get("ui_update", 0) + 1
+                chain.append(prop_step)
 
         elif seg["type"] == "condition":
             then_chain = build_chain_from_segments(
@@ -619,18 +664,21 @@ def _try_method_reference_fallback(
     reg: dict,
     symbols_by_id: dict[str, dict],
     source_lines: list[str],
+    symbol_body_cache: dict[tuple[str, str], str],
 ) -> str:
     """If the handler is a method reference (this::onClick), look up the
     target method's body from function_symbols and return it."""
-    # Search for ::<methodName> pattern near the registration line
     reg_line = reg.get("line", 0)
     if not source_lines or reg_line < 1:
         return ""
-    line_text = source_lines[reg_line - 1] if reg_line <= len(source_lines) else ""
-    m = re.search(r'::(\w+)\b', line_text)
-    if not m:
-        return ""
-    target_method = m.group(1)
+
+    target_method = reg.get("callback_ref", "")
+    if not target_method:
+        line_text = source_lines[reg_line - 1] if reg_line <= len(source_lines) else ""
+        m = re.search(r'::(\w+)\b', line_text)
+        if not m:
+            return ""
+        target_method = m.group(1)
 
     enclosing_sym_id = reg.get("enclosing_symbol_id", "")
     enclosing_sym = symbols_by_id.get(enclosing_sym_id, {})
@@ -638,22 +686,255 @@ def _try_method_reference_fallback(
     if not handler_class:
         return ""
 
-    # Find the target method's symbol and extract its body
+    return _get_method_body_from_class(
+        handler_class, target_method, symbols_by_id, source_lines, symbol_body_cache,
+    )
+
+
+_CALLBACK_VAR_ASSIGN_RE = re.compile(
+    r'(?:val|var|final\s+)?\s*{name}\s*(?::[^=]+)?=\s*(.+?)(?:;|$)',
+    re.MULTILINE,
+)
+_METHOD_REF_EXPR_RE = re.compile(r'(?:\bthis\b|\b\w+\b)?::(\w+)\b')
+_ANON_OVERRIDE_RE = re.compile(
+    r'override\s+fun\s+\w+\s*\([^)]*\)\s*\{|'
+    r'(?:public|private|protected)?\s*(?:void|boolean|int|long|String|char|float|double|[A-Z]\w*)\s+\w+\s*\([^)]*\)\s*\{',
+    re.MULTILINE,
+)
+
+
+
+def _get_symbol_text(source_lines: list[str], start_line: int, end_line: int) -> str:
+    if not source_lines or start_line < 1 or end_line < start_line:
+        return ""
+    return "\n".join(source_lines[start_line - 1:end_line])
+
+
+
+def _extract_body_from_symbol_text(raw: str) -> str:
+    if not raw:
+        return ""
+    brace = raw.find("{")
+    if brace < 0:
+        return ""
+    body, _ = extract_braced_block(raw, brace)
+    return body
+
+
+
+def _get_symbol_body(
+    sym: dict,
+    source_lines: list[str],
+    symbol_body_cache: dict[tuple[str, str], str],
+) -> str:
+    sym_id = sym.get("symbol_id", "")
+    source_key = sym.get("file", "")
+    cache_key = (source_key, sym_id)
+    if cache_key in symbol_body_cache:
+        return symbol_body_cache[cache_key]
+
+    try:
+        sl = int(sym.get("start_line", 0))
+        el = int(sym.get("end_line", 0))
+    except (TypeError, ValueError):
+        sl = 0
+        el = 0
+    body = _extract_body_from_symbol_text(_get_symbol_text(source_lines, sl, el))
+    symbol_body_cache[cache_key] = body
+    return body
+
+
+
+def _get_method_body_from_class(
+    class_name: str,
+    method_name: str,
+    symbols_by_id: dict[str, dict],
+    source_lines: list[str],
+    symbol_body_cache: dict[tuple[str, str], str],
+) -> str:
     for sym in symbols_by_id.values():
-        if (sym.get("class_name") == handler_class
-                and sym.get("function_name") == target_method):
-            try:
-                sl = int(sym.get("start_line", 0))
-                el = int(sym.get("end_line", 0))
-                if sl and el:
-                    raw = "\n".join(source_lines[sl - 1:el])
-                    brace = raw.find("{")
-                    if brace >= 0:
-                        body, _ = extract_braced_block(raw, brace)
-                        return body
-            except (IndexError, ValueError):
-                pass
+        if (sym.get("class_name") == class_name
+                and sym.get("function_name") == method_name):
+            return _get_symbol_body(sym, source_lines, symbol_body_cache)
     return ""
+
+
+
+def _try_callback_variable_fallback(
+    reg: dict,
+    symbols_by_id: dict[str, dict],
+    source_lines: list[str],
+    symbol_body_cache: dict[tuple[str, str], str],
+) -> tuple[str, str]:
+    callback_ref = reg.get("callback_ref", "")
+    enclosing_sym_id = reg.get("enclosing_symbol_id", "")
+    if not callback_ref or "." in callback_ref or not enclosing_sym_id:
+        return "", ""
+
+    enclosing_sym = symbols_by_id.get(enclosing_sym_id, {})
+    enclosing_body = _get_symbol_body(enclosing_sym, source_lines, symbol_body_cache)
+    if not enclosing_body:
+        return "", ""
+
+    assign_re = re.compile(
+        _CALLBACK_VAR_ASSIGN_RE.pattern.format(name=re.escape(callback_ref)),
+        _CALLBACK_VAR_ASSIGN_RE.flags,
+    )
+    m = assign_re.search(enclosing_body)
+    if not m:
+        return "", ""
+
+    expr = m.group(1).strip()
+    if not expr:
+        return "", ""
+
+    if expr.startswith("{"):
+        body, _ = extract_braced_block(expr, 0)
+        return body, "callback_var"
+    if "->" in expr:
+        arrow_idx = expr.find("->")
+        tail = expr[arrow_idx + 2:].strip()
+        if tail.startswith("{"):
+            body, _ = extract_braced_block(tail, 0)
+            return body, "callback_var"
+        if tail:
+            return tail, "callback_var"
+
+    mr = _METHOD_REF_EXPR_RE.search(expr)
+    if mr:
+        handler_class = enclosing_sym.get("class_name", "")
+        body = _get_method_body_from_class(
+            handler_class, mr.group(1), symbols_by_id, source_lines, symbol_body_cache,
+        )
+        if body:
+            return body, "callback_var_method_ref"
+
+    if expr.startswith("object") or expr.startswith("new "):
+        body = _extract_override_body(expr)
+        if body:
+            return body, "callback_var_anonymous_listener"
+
+    return "", ""
+
+
+
+def _extract_override_body(text: str) -> str:
+    if not text:
+        return ""
+    for m in _ANON_OVERRIDE_RE.finditer(text):
+        brace_offset = text.find("{", m.start())
+        if brace_offset < 0:
+            continue
+        body, _ = extract_braced_block(text, brace_offset)
+        if body:
+            return body
+    return ""
+
+
+
+def _try_anonymous_listener_fallback(
+    reg: dict,
+    source_lines: list[str],
+    reg_line: int,
+) -> str:
+    if not source_lines or reg_line < 1 or reg_line > len(source_lines):
+        return ""
+    start = reg_line - 1
+    tail = "\n".join(source_lines[start:min(len(source_lines), start + 40)])
+    return _extract_override_body(tail)
+
+
+
+def _build_fallback_chain(
+    enclosing_sym_id: str,
+    handler_class: str,
+    source_lines: list[str],
+    calls_by_from: dict[str, list[dict]],
+    symbols_by_id: dict[str, dict],
+    symbols_by_class_method: dict[tuple[str, str], dict],
+) -> list[dict]:
+    if not enclosing_sym_id:
+        return []
+    child_call_names = get_child_calls_from_graph(enclosing_sym_id, calls_by_from)
+    if not child_call_names:
+        return []
+    step_counter: dict[str, int] = {}
+    return _build_flat_chain(
+        child_call_names,
+        "",
+        handler_class,
+        calls_by_from,
+        symbols_by_id,
+        symbols_by_class_method,
+        source_lines,
+        depth=0,
+        max_depth=1,
+        visited={enclosing_sym_id},
+        step_counter=step_counter,
+    )
+
+
+
+def _resolve_handler_body(
+    reg: dict,
+    source_lines: list[str],
+    reg_line: int,
+    symbols_by_id: dict[str, dict],
+    symbol_body_cache: dict[tuple[str, str], str],
+) -> tuple[str, str]:
+    callback_kind = reg.get("callback_kind", "unknown")
+
+    handler_body, _, _ = extract_handler_body(source_lines, reg_line)
+    if handler_body:
+        return handler_body, "inline_lambda"
+
+    if callback_kind == "method_ref":
+        handler_body = _try_method_reference_fallback(reg, symbols_by_id, source_lines, symbol_body_cache)
+        if handler_body:
+            return handler_body, "method_ref"
+        return "", "method_ref_unresolved"
+
+    if callback_kind == "callback_var":
+        handler_body, reason = _try_callback_variable_fallback(
+            reg, symbols_by_id, source_lines, symbol_body_cache,
+        )
+        if handler_body:
+            return handler_body, reason
+        return "", "callback_var_unresolved"
+
+    if callback_kind == "anonymous_listener":
+        handler_body = _try_anonymous_listener_fallback(reg, source_lines, reg_line)
+        if handler_body:
+            return handler_body, "anonymous_listener"
+        return "", "anonymous_listener_unresolved"
+
+    handler_body = _try_method_reference_fallback(reg, symbols_by_id, source_lines, symbol_body_cache)
+    if handler_body:
+        return handler_body, "method_ref"
+
+    handler_body, reason = _try_callback_variable_fallback(
+        reg, symbols_by_id, source_lines, symbol_body_cache,
+    )
+    if handler_body:
+        return handler_body, reason
+
+    handler_body = _try_anonymous_listener_fallback(reg, source_lines, reg_line)
+    if handler_body:
+        return handler_body, "anonymous_listener"
+
+    return "", "callback_body_unresolved"
+
+
+def _derive_owner_classes(handler_class: str) -> list[str]:
+    """Derive owner classes from handler_class, including outer class for inner classes."""
+    if not handler_class:
+        return []
+    owners = [handler_class]
+    if "$" in handler_class:
+        outer = handler_class.split("$", 1)[0]
+        if outer:
+            owners.append(outer)
+    return owners
 
 
 def _measure_max_depth(steps: list[dict]) -> int:
@@ -713,14 +994,15 @@ def extract_event_chains(
     root: Path,
     file_cache: dict[str, list[str]],
     xml_ids: set[str] | None = None,
-) -> tuple[list[dict], int, int]:
+) -> tuple[list[dict], dict[str, int], int]:
     """Extract event→effect chains from event registrations.
 
-    Returns (behavior_chains, without_handler_count, max_depth_seen).
+    Returns (behavior_chains, handler_resolution_stats, max_depth_seen).
     """
     behavior_chains: list[dict] = []
-    without_handler = 0
+    handler_stats: dict[str, int] = defaultdict(int)
     max_depth_seen = 0
+    symbol_body_cache: dict[tuple[str, str], str] = {}
 
     for reg in event_regs:
         view_ref = reg.get("view_ref", "")
@@ -729,39 +1011,75 @@ def extract_event_chains(
         reg_line = reg.get("line", 0)
         enclosing_sym_id = reg.get("enclosing_symbol_id", "")
 
+        # PendingIntent 绑定：跨进程回调，无本地 handler，直接记录跳过链分析
+        if reg.get("is_pending_intent"):
+            source_lines = _read_source_lines(root, reg_file, file_cache)
+            viewref_map = _build_viewref_to_id("\n".join(source_lines)) if source_lines else {}
+            element_id = resolve_element_id(view_ref, viewref_map, xml_ids)
+            pi_class = symbols_by_id.get(enclosing_sym_id, {}).get("class_name", "")
+            behavior_chains.append({
+                "view_ref": view_ref,
+                "element_id": element_id,
+                "event_type": "pending_intent",
+                "handler_method": "",
+                "handler": {"file": reg_file, "method": "", "class": pi_class},
+                "effect_chain": [],
+                "effect_summary": ["pending_intent:cross_process"],
+                "chain_depth": 0,
+                "confidence": "pending_intent",
+                "handler_resolution": {"strategy": "pending_intent", "fallback_used": False},
+            })
+            continue
+
         source_lines = _read_source_lines(root, reg_file, file_cache)
         if not source_lines:
-            without_handler += 1
+            handler_stats["missing_source"] += 1
             continue
 
         viewref_map = _build_viewref_to_id("\n".join(source_lines))
         element_id = resolve_element_id(view_ref, viewref_map, xml_ids)
 
-        handler_body, body_start, body_end = extract_handler_body(source_lines, reg_line)
-        if not handler_body:
-            # Try method reference fallback (this::onClick)
-            handler_body = _try_method_reference_fallback(reg, symbols_by_id, source_lines)
-            if not handler_body:
-                without_handler += 1
-                continue
+        handler_body, resolution_strategy = _resolve_handler_body(
+            reg, source_lines, reg_line, symbols_by_id, symbol_body_cache,
+        )
 
         enclosing_sym = symbols_by_id.get(enclosing_sym_id, {})
         handler_class = enclosing_sym.get("class_name", "")
 
-        step_counter: dict[str, int] = {}
-        visited: set[str] = set()
-        if enclosing_sym_id:
-            visited.add(enclosing_sym_id)
+        effect_chain: list[dict] = []
+        fallback_used = False
 
-        # Use condition-aware chain builder
-        segments = split_body_by_conditions(handler_body)
-        effect_chain = build_chain_from_segments(
-            segments, handler_class,
-            calls_by_from, symbols_by_id, symbols_by_class_method,
-            source_lines,
-            depth=0, max_depth=3,
-            visited=visited, step_counter=step_counter,
-        )
+        if handler_body:
+            handler_stats[resolution_strategy] += 1
+            step_counter: dict[str, int] = {}
+            visited: set[str] = set()
+            if enclosing_sym_id:
+                visited.add(enclosing_sym_id)
+
+            segments = split_body_by_conditions(handler_body)
+            effect_chain = build_chain_from_segments(
+                segments, handler_class,
+                calls_by_from, symbols_by_id, symbols_by_class_method,
+                source_lines,
+                depth=0, max_depth=3,
+                visited=visited, step_counter=step_counter,
+            )
+        else:
+            fallback_chain = _build_fallback_chain(
+                enclosing_sym_id,
+                handler_class,
+                source_lines,
+                calls_by_from,
+                symbols_by_id,
+                symbols_by_class_method,
+            )
+            if fallback_chain:
+                effect_chain = fallback_chain
+                fallback_used = True
+                handler_stats["fallback_used"] += 1
+            else:
+                handler_stats[resolution_strategy] += 1
+                continue
 
         chain_depth = _measure_max_depth(effect_chain)
         max_depth_seen = max(max_depth_seen, chain_depth)
@@ -771,9 +1089,14 @@ def extract_event_chains(
             handler_info = {
                 "symbol_id": enclosing_sym_id,
                 "method": enclosing_sym.get("function_name", ""),
+                "class": handler_class,
                 "file": reg_file,
                 "line": reg_line,
             }
+
+        confidence = "static_analysis" if handler_body and effect_chain else "no_chain"
+        if fallback_used and effect_chain:
+            confidence = "fallback_analysis"
 
         behavior_chains.append({
             "element_id": element_id,
@@ -782,10 +1105,17 @@ def extract_event_chains(
             "handler": handler_info,
             "effect_chain": effect_chain,
             "chain_depth": chain_depth,
-            "confidence": "static_analysis" if effect_chain else "no_chain",
+            "confidence": confidence,
+            "handler_resolution": {
+                "strategy": resolution_strategy,
+                "fallback_used": fallback_used,
+            },
+            "claim_hints": {
+                "owner_classes": _derive_owner_classes(handler_class),
+            },
         })
 
-    return behavior_chains, without_handler, max_depth_seen
+    return behavior_chains, dict(handler_stats), max_depth_seen
 
 
 def extract_lifecycle_hooks(
@@ -912,7 +1242,7 @@ def run(
 
     # ── Event chains (Layer 3) ──
     event_regs = source_findings.get("findings", {}).get("event_registrations", [])
-    behavior_chains, without_handler, max_depth_seen = extract_event_chains(
+    behavior_chains, handler_stats, max_depth_seen = extract_event_chains(
         event_regs, calls_by_from, symbols_by_id, symbols_by_class_method,
         root, file_cache, xml_ids=xml_ids,
     )
@@ -926,8 +1256,12 @@ def run(
 
     # ── Stats ──
     total_by_step: dict[str, int] = {}
+    confidence_counts: dict[str, int] = {}
     for bc in behavior_chains:
         _merge_counts(total_by_step, _count_step_types(bc.get("effect_chain", [])))
+        confidence = bc.get("confidence", "")
+        if confidence:
+            confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
     total_lifecycle_calls = sum(
         len(hooks) for cls_hooks in lifecycle_hooks.values() for hooks in cls_hooks.values()
     )
@@ -938,7 +1272,19 @@ def run(
         "stats": {
             "total_bindings": len(event_regs),
             "with_effect_chain": sum(1 for bc in behavior_chains if bc["effect_chain"]),
-            "without_handler": without_handler,
+            "without_handler": sum(
+                handler_stats.get(k, 0)
+                for k in (
+                    "missing_source",
+                    "callback_body_unresolved",
+                    "method_ref_unresolved",
+                    "callback_var_unresolved",
+                    "anonymous_listener_unresolved",
+                )
+            ),
+            "handler_resolution": handler_stats,
+            "by_confidence": confidence_counts,
+            "fallback_chain": handler_stats.get("fallback_used", 0),
             "max_chain_depth": max_depth_seen,
             "by_step_type": total_by_step,
             "lifecycle_classes": len(lifecycle_hooks),
