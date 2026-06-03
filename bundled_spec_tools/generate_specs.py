@@ -390,8 +390,8 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "element_id": eid,
                             "event_type": bc.get("event_type", ""),
                             "handler_method": bc.get("handler", {}).get("method", ""),
-                            "effect_chain": chain,
                             "effect_summary": _summarize_effects(chain),
+                            "effect_chain": chain,
                             "chain_depth": bc.get("chain_depth", 0),
                             "confidence": bc.get("confidence", "static_analysis"),
                         })
@@ -406,8 +406,8 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                             "element_id": eid,
                             "event_type": bc.get("event_type", ""),
                             "handler_method": bc.get("handler", {}).get("method", ""),
-                            "effect_chain": chain,
                             "effect_summary": _summarize_effects(chain),
+                            "effect_chain": chain,
                             "chain_depth": bc.get("chain_depth", 0),
                             "confidence": bc.get("confidence", "static_analysis"),
                             "binding_source": "handler_class_layout_fallback",
@@ -439,8 +439,8 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                     "element_id": eid,
                     "event_type": inferred.get("event_type", ""),
                     "handler_method": inferred.get("handler_method", ""),
-                    "effect_chain": inferred.get("effect_chain", []),
                     "effect_summary": inferred.get("effect_summary", []),
+                    "effect_chain": inferred.get("effect_chain", []),
                     "chain_depth": inferred.get("chain_depth", 0),
                     "confidence": inferred.get("confidence", "inferred"),
                     "binding_source": inferred.get("binding_source", "unbound_inference"),
@@ -465,6 +465,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             )
 
         # ── Build spec dict in progressive-disclosure order ──
+        # brief 最前（LLM 概览先读），其后才是身份/导航/UI/行为/统计。
         stats = {
             "conditional_visibility": sum(1 for e in elements if e.get("conditional_visibility")),
             "inflated_layouts": len(gaps),
@@ -479,14 +480,13 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                 1 for eb in event_bindings if eb.get("effect_chain")
             )
 
-        spec = {
-            "class": class_name,
-            "layout": layout_name,
-            "screen_type": screen_type,
-            "source": source,
-        }
+        spec = {}
         if brief:
             spec["brief"] = brief
+        spec["screen_type"] = screen_type
+        spec["class"] = class_name
+        spec["layout"] = layout_name
+        spec["source"] = source
         spec["navigation"] = {
             "entry_points": entry_points,
             "exit_points": navigation,
