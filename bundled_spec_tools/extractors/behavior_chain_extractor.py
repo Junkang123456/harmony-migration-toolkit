@@ -937,6 +937,32 @@ def _derive_owner_classes(handler_class: str) -> list[str]:
     return owners
 
 
+def _prune_effectless_calls(steps: list[dict], depth: int = 0) -> list[dict]:
+    """Prune `call` steps in the *recursive expansion* whose subtree carries no effect.
+
+    Capturing member calls in the direct handler body (so `view.setText(...)` is
+    not lost) means many calls also resolve to project methods and get recursively
+    expanded via the call graph, bottoming out in generic `call` leaves that
+    classify to nothing. Those deep dead-ends only bloat the raw chain —
+    `effect_summary`/`brief` already skip them.
+
+    Depth-0 steps are the handler's own statements (naming what it directly does)
+    and are always kept; below depth 0 a `call` is only kept if it still leads to a
+    navigate/ui_update/ui_feedback/async step. Effects and conditions (control-flow
+    structure) are kept at every depth.
+    """
+    out: list[dict] = []
+    for s in steps:
+        st = s.get("step", "")
+        for key in ("nested", "then", "else"):
+            if s.get(key):
+                s[key] = _prune_effectless_calls(s[key], depth + 1)
+        if depth >= 1 and st == "call" and not s.get("nested"):
+            continue  # deep dead-end call → drop
+        out.append(s)
+    return out
+
+
 def _measure_max_depth(steps: list[dict]) -> int:
     """Measure the maximum nesting depth of an effect chain."""
     max_d = 0
@@ -1081,6 +1107,7 @@ def extract_event_chains(
                 handler_stats[resolution_strategy] += 1
                 continue
 
+        effect_chain = _prune_effectless_calls(effect_chain)
         chain_depth = _measure_max_depth(effect_chain)
         max_depth_seen = max(max_depth_seen, chain_depth)
 
