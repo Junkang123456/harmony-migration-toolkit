@@ -84,10 +84,14 @@ def _validate_core_artifacts(facts_dir: Path) -> dict[str, Any]:
 
 
 def _normalize_dir_facts_dir(facts_dir: Path, android_root: Path) -> None:
+    # Path normalization must preserve each file's authored key order — specs are
+    # built in progressive-disclosure order (brief first) and sorting keys here
+    # would alphabetize them (behavior before brief), defeating that intent.
     for p in facts_dir.rglob("*.json"):
         data = json.loads(p.read_text(encoding="utf-8"))
         fixed = normalize_android_paths(data, android_root.resolve())
-        dump_json(p, fixed)
+        text = json.dumps(fixed, indent=2, ensure_ascii=False) + "\n"
+        p.write_text(text, encoding="utf-8", newline="\n")
 
 
 def default_spec_tools_root() -> Path:
