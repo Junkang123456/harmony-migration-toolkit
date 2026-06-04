@@ -548,6 +548,52 @@ def main():
         print(f"  Synthetic: {ss['synthetic']} (cross-component)")
         print(f"  Total event_bindings in specs: {ss['total_event_bindings']}")
 
+    # Non-UI component model: route orphan behavior-chains (services, app
+    # widgets, receivers, listeners, playback infra…) to a component-level home
+    # instead of forcing them onto an unrelated screen. Additive — does not
+    # affect screen assignment above.
+    from extractors.android_project import manifest_components
+    from extractors.non_ui_components import build as build_non_ui_components
+    from extractors.non_ui_components import inject_screen_backrefs
+    all_chains = bc_result.get("behavior_chains") or []
+    assigned_ids = set(spec_stats.get("assigned_chain_ids", [])) if spec_stats else set()
+    orphan_chains = [c for i, c in enumerate(all_chains) if i not in assigned_ids]
+    try:
+        from verification.bytecode_verifier import bytecode_hierarchy
+        bc_hier, _ = bytecode_hierarchy(project_root)
+    except Exception:
+        bc_hier = {}
+    non_ui = build_non_ui_components(
+        orphan_chains, manifest_components(project_root), bc_hier,
+        call_graph=call_graph_payload, class_layouts=nav.get("class_layouts"))
+    (out_dir / "non_ui_components.json").write_text(
+        json.dumps(non_ui, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    # Reverse link: note each component as a non_ui_dependencies entry inside the
+    # screen specs that drive it, so a screen-translating agent sees the coupling.
+    link = inject_screen_backrefs(non_ui, specs_dir)
+    nus = non_ui["stats"]
+    print(f"\n  Non-UI components: {nus['components']} from {nus['behaviors']} orphan chains"
+          f" (by kind: {nus['by_kind']}, by source: {nus['by_kind_source']})")
+    print(f"  Non-UI ↔ screen links: {nus['screen_links']} caller edges to screens;"
+          f" non_ui_dependencies written into {link['screen_specs_linked']} specs"
+          f" ({nus['components_with_callers']}/{nus['components']} components have callers)")
+    if nus["excluded_ui_chains"]:
+        print(f"  Excluded UI orphan chains (left for screen path): {nus['excluded_ui_chains']}")
+
+    # Combined behavior coverage: chains that found a home — claimed by a screen
+    # spec OR routed to a non-UI component — over all extracted chains. The
+    # remainder is genuinely homeless (UI orphans pending the screen path + chains
+    # with no resolvable handler class).
+    if spec_stats and spec_stats["total_chains"] > 0:
+        total = spec_stats["total_chains"]
+        homed = spec_stats["assigned"] + nus["behaviors"]
+        pending_ui = sum(nus["excluded_ui_chains"].values())
+        no_handler = nus["unclassified_orphan_chains"]
+        print(f"\n  Behavior coverage (screen + non-UI): {homed}/{total} = {homed / total * 100:.1f}%"
+              f"  [screen {spec_stats['assigned']} + non-UI {nus['behaviors']}]")
+        print(f"    homeless: {total - homed}  (UI orphan pending {pending_ui} + no-handler {no_handler})")
+
     print("\nDone. Output files:")
     for name in ["static_xml.json", "source_findings.json", "ground_truth.json",
                  "function_symbols.json", "call_graph.json",
@@ -555,6 +601,7 @@ def main():
                  "fragments.json",
                  "dynamic_ui.json",
                  "behavior_chains.json",
+                 "non_ui_components.json",
                  "gap_analysis.json", "ui_dag.json",
                  "ui_paths.json", "ui_paths_legacy.json", "ui_paths_report.json",
                  "ui_effect_paths.json",

@@ -563,6 +563,10 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
         "synthetic": synthetic_total,
         "fallback_claimed": fallback_claimed,
         "total_event_bindings": total_eb,
+        # Indices into `behavior_chains` that landed in some screen spec. Lets
+        # callers derive the orphan set (chains not in this list) without
+        # re-implementing the claim predicate.
+        "assigned_chain_ids": sorted(assigned_chain_ids),
     }
 
 

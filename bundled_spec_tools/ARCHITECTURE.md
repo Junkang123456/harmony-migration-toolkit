@@ -323,6 +323,23 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 - `bytecode_verifier.py` — 从字节码继承链验证 Fragment/Activity 分类
 - `report.py` — 汇总 `verification_report.json`
 
+### 5.15 非 UI 组件归类 — `extractors/non_ui_components.py`
+
+**为何需要**：迁移目标是把 Android app 翻成鸿蒙 app，不是硬把行为挂到屏幕上提覆盖率。orphan chain（§8.2）里大多数 handler 类**本就不是屏幕**——后台 `<service>`、桌面 widget `<receiver>`、传感器/滚动监听器、播放基础设施。它们是真实功能、需要迁移，但不属于任何 screen spec。本模块把这些 orphan 行为按 owning class 聚合成「非 UI 组件」，并给出鸿蒙能力映射提示，作为它们的归处。
+
+**组件类型判定**（确定性，按优先级，记录 `kind_source` 供审计）：
+1. **AndroidManifest 声明**（权威，无需编译）：`<service>`→`service`；`<provider>`→`provider`；带 appwidget meta/action 的 `<receiver>`→`appwidget_provider`；普通 `<receiver>`→`broadcast_receiver`。来源 `extractors/android_project.py:manifest_components()`。
+2. **字节码继承链**（已编译时）：沿 `.class` super 链匹配 `*Service`/`AppWidgetProvider`/`BroadcastReceiver`/`*Listener`/`View*`，复用 `verification/bytecode_verifier.py:bytecode_hierarchy()`。
+3. **类名后缀启发式**（兜底，标 `kind_source: name_heuristic`）。
+
+**UI 类排除**：经判定为 `activity`/`fragment`/`adapter` 的 orphan 是 UI（如 `PagedToolbarFragment`、`EpisodeItemListAdapter`），**不进**本产物，计入 `stats.excluded_ui_chains`，留给屏幕/item_layout 路径。
+
+**鸿蒙映射提示**：`service`→ServiceExtensionAbility(+AVSession)；`appwidget_provider`→FormExtensionAbility(服务卡片)；`broadcast_receiver`→CommonEvent/后台任务；`provider`→DataShareExtensionAbility；`listener`→宿主侧事件/传感器 API。
+
+**与 app 其余部分的联系（双向）**：组件不是孤立的映射目标。利用 `call_graph.json`（对被调方做精确类名匹配）为每个组件补 `used_by`——构造或调用它的调用者类，并标出其中哪些是屏幕（在 navigation `class_layouts` 中），空 `used_by` 是诚实信号（无静态调用者，如框架回调驱动的 widget updater），不臆造。反向由 `inject_screen_backrefs()` 把组件作为一条 `non_ui_dependencies` 写回受影响的屏幕 spec，让翻译某屏幕的 agent 也看到它驱动了哪些非 UI 组件。反向解析以 spec 自身的 `class` 字段为权威键（不是 layout 名，因 `audio_player_fragment` 与 spec 的 `audioplayer_fragment` 可能不一致）——匹配不上即不写反链，不做模糊猜测，故正向 `screen_links` 可多于反向 `screen_specs_linked`。
+
+orphan 集合由 `generate_all_specs` 返回的 `assigned_chain_ids` 推导（chain 不在其中即 orphan），不重复实现认领判定。产物 `non_ui_components.json`，由 `main.py` 在 spec 生成后装配（先 `build()`，再 `inject_screen_backrefs()` 回写 spec）。覆盖率（AntennaPod）：42 个 orphan 中 35 条归入 10 个非 UI 组件，6 条 UI（adapter 5 + fragment 1）排除，1 条无 handler 类；其中约 28 条 caller→screen 边写入 22 个屏幕 spec 的 `non_ui_dependencies`。
+
 ---
 
 ## 6. Spec 生成 — `generate_specs.py`
@@ -459,8 +476,9 @@ Stage 0 把 spec 写入临时目录后，`stages/stage0_run_spec_tools.py::_norm
 | `fragments.json` | ~78KB | Fragment 检测结果 |
 | `dynamic_ui.json` | ~3KB | 动态 UI + Adapter |
 | `behavior_chains.json` | ~1.9MB | 事件→效果链 |
+| `non_ui_components.json` | ~小 | orphan 行为按非 UI 组件聚合（service/widget/receiver/listener）+ 鸿蒙能力提示 + `used_by` 调用者/屏幕（§5.15） |
 | `ui_dag.json` / `ui_paths*.json` | — | UI 导航树与路径 |
-| `specs/*.json` | ~177 个 | 每屏幕迁移 spec |
+| `specs/*.json` | ~177 个 | 每屏幕迁移 spec（被组件驱动的屏幕含 `non_ui_dependencies` 反链，§5.15） |
 | `screen_index.json` | ~50KB | 全局屏幕索引（LLM 概览） |
 | `app_model/` | ~1MB | 分层 App 模型 |
 | `verification_report.json` | — | 交叉验证（--validate） |
@@ -499,6 +517,8 @@ chain 提取成功，但其 owning class 不映射到任何带 layout 的屏幕�
 - 服务类 orphan 是**正确行为**——它们是 App 的非 UI 逻辑，不属于任何屏幕。把它们塞进某个 spec 才是错误。
 - Adapter orphan 受限于 `dynamic_ui` 的 `setAdapter` 检测：当 adapter 实例化与 `setAdapter` 调用跨方法/跨文件，或经工厂构造时，host↔item_layout 关联断裂。补全需要**跨过程数据流分析**，超出当前单文件正则+调用图的范围。
 - 抽象基类 Fragment 无自有布局，是 Android **运行时多态**结构，静态无法在基类侧确定具体 layout。
+
+> **去向**：这些 orphan 不再只是「认领不到」的悬空行为。非 UI 类（service/widget/receiver/listener/辅助类）由 `non_ui_components.py`（§5.15）按组件归类、附鸿蒙能力提示，写入 `non_ui_components.json`；UI 类（adapter/抽象 Fragment）则计入 `excluded_ui_chains`，留给屏幕/item_layout 路径后续处理。即「不硬挂屏幕，也不丢功能」。组件还经 `call_graph` 反查出 `used_by`（谁在驱动它）并把屏幕调用者反链回对应 spec 的 `non_ui_dependencies`，避免成为脱离上下文的孤立映射目标。
 
 ### 8.3 完全没有找到行为绑定的控件（unbound interactive，AntennaPod 24 个，7 个未覆盖）
 
@@ -595,3 +615,5 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 | 2026-06-03 | Spec 字段重排：brief 提至最前，event_bindings 内 effect_summary 先于 effect_chain |
 | 2026-06-03 | 修复 Stage 0 路径归一化误用 sort_keys 破坏 spec 字段顺序；改为顺序保持序列化 |
 | 2026-06-03 | 文档重写：补充覆盖率边界与未能分析项的根因分析（§8） |
+| 2026-06-03 | 非 UI 组件归类 non_ui_components.py（§5.15）：orphan 行为按 service/widget/receiver/listener 聚合 + 鸿蒙能力提示；manifest/字节码/类名三级确定性判定；UI 类（adapter/Fragment）排除。新增 `non_ui_components.json` |
+| 2026-06-04 | 非 UI 组件揭示双向联系（§5.15）：经 `call_graph` 精确类名匹配补 `used_by`（调用者类 + 是否屏幕）；`inject_screen_backrefs()` 以 spec 的 `class` 字段为权威键把组件反链写入屏幕 spec 的 `non_ui_dependencies`；匹配不上不模糊猜测 |

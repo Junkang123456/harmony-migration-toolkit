@@ -114,6 +114,55 @@ def manifest_action_map(project_root: str | Path) -> dict[str, list[str]]:
     return action_map
 
 
+def manifest_components(project_root: str | Path) -> dict[str, dict]:
+    """Map non-UI Android components declared in manifests to their kind.
+
+    Returns {short_class: {"kind", "name_attr", "manifest"}} for every
+    <service>, <receiver> and <provider> across all module manifests. A
+    <receiver> is reported as ``appwidget_provider`` when its subtree declares
+    the AppWidget provider meta-data or the APPWIDGET_UPDATE intent action;
+    otherwise it is a plain ``broadcast_receiver``.
+    """
+    components: dict[str, dict] = {}
+    tag_kind = {
+        "service": "service",
+        "receiver": "broadcast_receiver",
+        "provider": "provider",
+    }
+    for manifest_path in manifests(project_root):
+        try:
+            tree = ET.parse(manifest_path)
+        except ET.ParseError:
+            continue
+        package_name = tree.getroot().get("package", "") or ""
+        for tag, kind in tag_kind.items():
+            for elem in tree.iter(tag):
+                name_attr = elem.get(f"{ANDROID_NS}name", "")
+                if not name_attr:
+                    continue
+                short_name = _short_activity_name(name_attr, package_name)
+                elem_kind = kind
+                if kind == "broadcast_receiver" and _is_appwidget_receiver(elem):
+                    elem_kind = "appwidget_provider"
+                # First declaration wins; manifests rarely re-declare a class.
+                components.setdefault(short_name, {
+                    "kind": elem_kind,
+                    "name_attr": name_attr,
+                    "manifest": manifest_path.as_posix(),
+                })
+    return components
+
+
+def _is_appwidget_receiver(receiver_elem: ET.Element) -> bool:
+    for meta in receiver_elem.iter("meta-data"):
+        if meta.get(f"{ANDROID_NS}name", "") == "android.appwidget.provider":
+            return True
+    for action in receiver_elem.iter("action"):
+        if action.get(f"{ANDROID_NS}name", "") == "android.appwidget.action.APPWIDGET_UPDATE":
+            return True
+    return False
+
+
 def class_name_for_source(path: Path) -> str:
     return path.stem
 
