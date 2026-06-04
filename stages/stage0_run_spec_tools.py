@@ -150,10 +150,20 @@ def run_stage0(
         cmd = [sys.executable, str(spec_main), str(android_root), "--out", str(scan_tmp)]
         try:
             subprocess.run(cmd, cwd=str(spec_tools), check=True)
-            _copy_from_spec_output(scan_tmp, facts_dir)
+            if not scan_tmp.is_dir():
+                raise FileNotFoundError(
+                    f"Spec-tools scan produced no output directory: {scan_tmp}"
+                )
+            # Move (rename on the same filesystem — scan_tmp and facts_dir are
+            # siblings under out_dir) rather than copytree+rmtree, avoiding a full
+            # copy of the multi-MB scan tree. On success scan_tmp is gone, so the
+            # finally cleanup is a no-op; it only fires if the scan or move failed.
+            if facts_dir.exists():
+                shutil.rmtree(facts_dir)
+            shutil.move(str(scan_tmp), str(facts_dir))
         finally:
-            # Transient scan dir: mirrored into facts_dir above, so drop it even if
-            # the scan or copy failed — it must never linger as a stray artifact.
+            # A killed process (Ctrl-C, OOM) can skip this; the rmtree at the top of
+            # the next run sweeps any stale scan_tmp, so it never lingers as an artifact.
             if scan_tmp.exists():
                 shutil.rmtree(scan_tmp)
     else:
