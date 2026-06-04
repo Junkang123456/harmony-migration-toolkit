@@ -46,6 +46,10 @@ _NOISE_TOKENS = {
     "abstract",
     "impl",
     "ui",
+    # build-tree / source-root path words — never a meaningful feature name
+    "java",
+    "kotlin",
+    "src",
 }
 
 _ACTION_TOKENS = {
@@ -85,8 +89,13 @@ def _split_words(value: str) -> list[str]:
 
 
 def _domain_tokens(meta: dict[str, Any]) -> list[str]:
+    # Cluster on the developer-chosen semantic names only — the class name and the
+    # layout id. The `package` and `source_path` fields carry the reverse-domain and
+    # build-tree path (de/danoeh/antennapod, java/src/main/app …), which are pure
+    # location, identical across every screen, and would otherwise dominate the token
+    # counts and turn every feature label into "<X> Java Src". They are excluded.
     tokens: list[str] = []
-    for key in ("class_name", "layout", "package", "source_path"):
+    for key in ("class_name", "layout"):
         tokens.extend(_split_words(str(meta.get(key) or "")))
     return [t for t in tokens if t not in _NOISE_TOKENS]
 

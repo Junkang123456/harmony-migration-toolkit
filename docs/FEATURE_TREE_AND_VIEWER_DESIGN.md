@@ -127,7 +127,7 @@ bundle **不嵌入**全量 `nodes`/`edges`；全图请读 `outline.artifacts.fea
 | `screen` | 一屏（Activity / Fragment / Dialog **宿主类**） | `navigation_graph.nodes`；合成类折叠入宿主 |
 | `ui_surface` | 布局或 Compose 占位容器 | `0_android_facts/specs/*_spec.json` |
 | `ui_control` | 可交互控件 | spec `ui_elements` |
-| `behavior` | UI 效果路径（含入口符号锚点） | **`ui_effect_paths.json`**（`evidence.source` 为 `ui_effect_paths.json`） |
+| `behavior` | 事件→处理→效果链（含入口符号锚点） | **`behavior_chains.json`**（`evidence.source` 为 `behavior_chains.json`；`ui_effect_paths.json` 为补充路径视图，常为空） |
 | `function_symbol` | 函数符号节点 | **`function_symbols.json`** |
 | `implementation` | 实现锚点 | **`source_findings.json`**（`findings` 各 bucket） |
 
@@ -244,11 +244,11 @@ flowchart TB
 **实现要点**：
 
 1. **screen 节点**：来自 `navigation_graph` 的节点与边端点；宿主类名经 [`kotlin_outer_host_class`](../stages/_util.py) 折叠 Kotlin 合成类。
-2. **feature 节点**：**无捆绑默认 taxonomy**。先用 `--taxonomy` / `--taxonomy-overlay` 的 YAML 规则做「首条命中」分配；其余屏幕由 [`mine_generated_taxonomy`](../stages/feature_taxonomy_miner.py) 基于类名/layout/包路径 token + 导航邻接做确定性聚类。`taxonomy_report.json` 的 `source` 取值包括 `generated_taxonomy`、`explicit_taxonomy`、`generated+explicit_taxonomy`、`none`。
+2. **feature 节点**：**无捆绑默认 taxonomy**。先用 `--taxonomy` / `--taxonomy-overlay` 的 YAML 规则做「首条命中」分配；其余屏幕由 [`mine_generated_taxonomy`](../stages/feature_taxonomy_miner.py) 基于**类名 + layout** 的语义 token + 导航邻接做确定性聚类（`package` / `source_path` 为反向域名与构建路径，跨屏恒同、纯位置信息，已排除以免标签退化为「X Java Src」）。`taxonomy_report.json` 的 `source` 取值包括 `generated_taxonomy`、`explicit_taxonomy`、`generated+explicit_taxonomy`、`none`。
 3. **feature/screen 边 `source` 字段**：显式规则 → `explicit_taxonomy`；挖掘生成 → `generated_taxonomy`；未归入任何 feature 的 screen → 仍由 `product_root` `parent_of` 连接，`source` 为 `taxonomy_unmatched_screen`。
 4. **导航边**：自 `navigation_graph.edges`，映射 `rel`（见 §4.2），附带 `via` / `trigger` / `line` 等保留可追溯字段。
 5. **UI 子树**：遍历 `0_android_facts/specs/*_spec.json`，挂 `ui_surface` / `ui_control`，`owns_ui` 连到对应 screen（类名与 spec `class` 对齐并折叠）。
-6. **behavior**：遍历 **`ui_effect_paths.json`**（须含 `source_file` 与 `line`）；`enters` 连到 **`function_symbols.json`** 解析到的入口符号；`triggers` 连到宿主 screen；`logical_feature_id` 取自解析到的目标 screen 所属 feature。
+6. **behavior**：遍历 **`behavior_chains.json`** 的 `behavior_chains[]`（事件→处理→效果链）；`enters` 连到 **`function_symbols.json`** 解析到的入口符号(`handler.symbol_id`)；`triggers` 连到由 `claim_hints.owner_classes`(再 handler 类)解析到的宿主 screen；`logical_feature_id` 取自该 screen 所属 feature；解析不到宿主的链由 `product_root` 以 `source: behavior_chains_unclaimed` 挂根。`coverage` 增加 `behavior_chain_total` / `behavior_chains_attached_to_screen` / `behavior_chains_with_entry_symbol` / `behavior_chains_unclaimed`。`ui_effect_paths.json` 作为补充路径视图保留(常为空)。
 7. **implementation**：遍历 **`source_findings.json`** → `implementation` 节点；与 screen / `function_symbol` 的连边见 §4.2。
 8. **calls**：自 **`call_graph.json`**，两端符号均在图中存在时添加 `function_symbol` 之间的 `calls` 边。
 9. **projection.harmony**：当 Stage 3 已生成且传入 `harmony_arch.v1.json` 时，按 screen 尝试挂载 route 占位；缺映射时 `gap_ref`（如 `UNMAPPED_ROUTE`、Compose 低保真叠加）。
