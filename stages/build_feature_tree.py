@@ -251,6 +251,8 @@ def build_feature_tree(
     sf = load_json(source_path) if source_path.is_file() else {}
     effect_path = facts_dir / "ui_effect_paths.json"
     effect_paths = _iter_effect_paths(load_json(effect_path)) if effect_path.is_file() else []
+    chains_path = facts_dir / "behavior_chains.json"
+    behavior_chains = list((load_json(chains_path) or {}).get("behavior_chains") or []) if chains_path.is_file() else []
     function_symbols, call_edges, unresolved_calls = _load_function_symbols(facts_dir)
     symbols_for_file = _symbols_by_file(function_symbols)
 
@@ -555,7 +557,7 @@ def build_feature_tree(
                     "source": spec_path.name,
                 }
             )
-            for el in spec.get("ui_elements") or []:
+            for el in spec.get("ui", {}).get("elements") or []:
                 if not isinstance(el, dict):
                     continue
                 eid = str(el.get("id") or el.get("android:id") or "").strip()
@@ -736,12 +738,120 @@ def build_feature_tree(
                 }
             )
 
+    # Behavior chains (event → handler → effect) are the core "what happens when you
+    # interact" signal for migration. They live in behavior_chains.json (385 on
+    # AntennaPod); ui_effect_paths.json above is a separate, often-empty path view, so
+    # without this loop the bundle reports behavior_count=0 and the translator gets no
+    # behavior at all. Each chain becomes a `behavior` node, attached to its owning
+    # screen via the deterministic claim hints (then handler class), and linked into
+    # the call graph via the handler's entry symbol.
+    chain_stats = {
+        "behavior_chain_total": len(behavior_chains),
+        "behavior_chains_attached_to_screen": 0,
+        "behavior_chains_with_entry_symbol": 0,
+        "behavior_chains_unclaimed": 0,
+    }
+
+    def _chain_sort_key(c: dict[str, Any]) -> tuple[str, int, str, str]:
+        h = c.get("handler") or {}
+        return (
+            _norm_path(h.get("file")),
+            _safe_int(h.get("line")),
+            str(c.get("element_id") or ""),
+            str(c.get("event_type") or ""),
+        )
+
+    for cidx, chain in enumerate(sorted(behavior_chains, key=_chain_sort_key)):
+        handler = chain.get("handler") if isinstance(chain.get("handler"), dict) else {}
+        event_type = str(chain.get("event_type") or "").strip()
+        element_id = str(chain.get("element_id") or chain.get("view_ref") or "").strip()
+        bid = f"behavior:chain:{cidx + 1}"
+        owner_classes = [str(c) for c in (chain.get("claim_hints") or {}).get("owner_classes") or []]
+        owner_candidates = list(owner_classes)
+        if handler.get("class"):
+            owner_candidates.append(str(handler.get("class")))
+        screen = ""
+        for cand in owner_candidates:
+            hc = host(cand)
+            if hc in screen_hosts:
+                screen = hc
+                break
+        feature = screen_to_feature.get(screen or "")
+        entry_symbol_id = str(handler.get("symbol_id") or "")
+        effect_steps = [
+            str(s.get("target") or "")
+            for s in (chain.get("effect_chain") or [])
+            if isinstance(s, dict) and s.get("target")
+        ]
+        nodes.append(
+            {
+                "node_id": bid,
+                "kind": "behavior",
+                "label": f"{event_type or 'event'}:{element_id or 'view'}",
+                "logical_feature_id": feature or "",
+                "evidence": {
+                    "source": "behavior_chains.json",
+                    "event_type": event_type,
+                    "element_id": element_id,
+                    "view_ref": chain.get("view_ref") or "",
+                    "handler_class": handler.get("class") or "",
+                    "handler_method": handler.get("method") or "",
+                    "file": _norm_path(handler.get("file")),
+                    "line": _safe_int(handler.get("line")),
+                    "entry_symbol_id": entry_symbol_id,
+                    "effect_steps": effect_steps,
+                    "chain_depth": _safe_int(chain.get("chain_depth")),
+                    "confidence": chain.get("confidence") or "",
+                    "owner_classes": [host(c) for c in owner_classes],
+                },
+            }
+        )
+        if entry_symbol_id:
+            chain_stats["behavior_chains_with_entry_symbol"] += 1
+            if _function_node_id(entry_symbol_id) in symbol_node_ids:
+                edges.append(
+                    {
+                        "edge_id": _stable_edge_id(bid, _function_node_id(entry_symbol_id), "enters", len(edges)),
+                        "from": bid,
+                        "to": _function_node_id(entry_symbol_id),
+                        "rel": "enters",
+                        "determinism": "static_analysis",
+                        "source": "behavior_chains.json",
+                    }
+                )
+        if screen and f"screen:{screen}" in screen_ids:
+            chain_stats["behavior_chains_attached_to_screen"] += 1
+            edges.append(
+                {
+                    "edge_id": _stable_edge_id(f"screen:{screen}", bid, "triggers", len(edges)),
+                    "from": f"screen:{screen}",
+                    "to": bid,
+                    "rel": "triggers",
+                    "determinism": "static_analysis",
+                    "source": "behavior_chains.json",
+                }
+            )
+        if not screen:
+            chain_stats["behavior_chains_unclaimed"] += 1
+        parent = f"feature:{feature}" if feature else product_id
+        edges.append(
+            {
+                "edge_id": _stable_edge_id(parent, bid, "parent_of", len(edges)),
+                "from": parent,
+                "to": bid,
+                "rel": "parent_of",
+                "determinism": "static_analysis",
+                "source": "behavior_chains.json" if feature else "behavior_chains_unclaimed",
+            }
+        )
+
     for i, e in enumerate(edges):
         if not e.get("edge_id"):
             e["edge_id"] = _stable_edge_id(str(e.get("from")), str(e.get("to")), str(e.get("rel")), i)
 
     coverage = _feature_line_coverage(nodes, edges)
     coverage.update(effect_stats)
+    coverage.update(chain_stats)
     coverage.update(_function_coverage(nodes, edges, unresolved_calls))
     taxonomy_report = build_taxonomy_report(
         screen_hosts,
