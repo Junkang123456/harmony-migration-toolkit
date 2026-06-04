@@ -83,15 +83,26 @@ def _validate_core_artifacts(facts_dir: Path) -> dict[str, Any]:
     return checks
 
 
-def _normalize_dir_facts_dir(facts_dir: Path, android_root: Path) -> None:
+def _normalize_dir_facts_dir(facts_dir: Path, android_root: Path) -> dict[str, dict[str, Any]]:
     # Path normalization must preserve each file's authored key order — specs are
     # built in progressive-disclosure order (brief first) and sorting keys here
     # would alphabetize them (behavior before brief), defeating that intent.
+    #
+    # Returns each artifact's sha256/byte index, computed from the text we just
+    # wrote, so the caller can build the manifest without a second full read of the
+    # tree (the call graph alone is ~13MB).
+    android_root = android_root.resolve()
+    hashes: dict[str, dict[str, Any]] = {}
     for p in facts_dir.rglob("*.json"):
         data = json.loads(p.read_text(encoding="utf-8"))
-        fixed = normalize_android_paths(data, android_root.resolve())
+        fixed = normalize_android_paths(data, android_root)
         text = json.dumps(fixed, indent=2, ensure_ascii=False) + "\n"
         p.write_text(text, encoding="utf-8", newline="\n")
+        hashes[p.relative_to(facts_dir).as_posix()] = {
+            "sha256": sha256_text(text),
+            "bytes": len(text.encode("utf-8")),
+        }
+    return hashes
 
 
 def default_spec_tools_root() -> Path:
@@ -174,7 +185,7 @@ def run_stage0(
             )
         _copy_from_spec_output(spec_output, facts_dir)
 
-    _normalize_dir_facts_dir(facts_dir, android_root)
+    artifact_hashes = _normalize_dir_facts_dir(facts_dir, android_root)
 
     manifest: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -185,13 +196,10 @@ def run_stage0(
         "artifact_checks": _validate_core_artifacts(facts_dir),
         "artifacts": {},
     }
-    for p in sorted(facts_dir.rglob("*.json")):
-        rel = p.relative_to(facts_dir).as_posix()
-        body = p.read_text(encoding="utf-8")
-        manifest["artifacts"][rel] = {
-            "sha256": sha256_text(body),
-            "bytes": len(body.encode("utf-8")),
-        }
+    # Reuse the sha256/byte index produced during normalization instead of reading
+    # every artifact a second time (the call graph alone is ~13MB).
+    for rel in sorted(artifact_hashes):
+        manifest["artifacts"][rel] = artifact_hashes[rel]
 
     dump_json(facts_dir / "manifest.json", manifest)
     return manifest
