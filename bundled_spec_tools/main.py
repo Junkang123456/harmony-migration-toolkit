@@ -65,15 +65,15 @@ def _print_spec_report(flat: list, dag: dict) -> None:
 
 def _print_spec_report_impl(flat: list, dag: dict) -> None:
     print("\n" + "=" * 70)
-    print("SPEC REPORT — UI Paths")
+    print("路径报告 (SPEC REPORT — UI Paths)")
     print("=" * 70)
 
     ag = dag.get("aggregate_stats", {})
-    print(f"  Reachable screens   : {ag.get('screens', 0)}")
-    print(f"  Total paths         : {len(flat)}")
+    print(f"  可达屏幕(reachable screens)：{ag.get('screens', 0)}")
+    print(f"  路径总数(total paths)：{len(flat)}")
 
     print("\n" + "-" * 70)
-    print("PATH DETAILS")
+    print("路径明细 (PATH DETAILS)")
     print("-" * 70)
     for p in flat:
         if isinstance(p, dict):
@@ -117,9 +117,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dep_roots = resolve_dependencies(project_root)
-    print(f"Project: {project_root}")
+    print(f"项目(project)：{project_root}")
     if dep_roots:
-        print(f"Detected dependencies ({len(dep_roots)}):")
+        print(f"检测到的依赖库(dependencies)，共 {len(dep_roots)} 个：")
         for d in dep_roots:
             print(f"  {d}")
     print("=" * 50)
@@ -127,7 +127,7 @@ def main():
     # ── 阶段一：静态提取 ──
 
     # Step 1: XML 静态提取
-    print("\n[1/7] Extracting XML resources...")
+    print("\n[1/7] 提取界面资源 (XML resources)…")
     xml_result = xml_extractor.run(project_root)
     for dep in dep_roots:
         dep_name = Path(dep).name
@@ -149,11 +149,12 @@ def main():
         json.dumps(xml_result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     s = xml_result["stats"]
-    print(f"  {s['total']} elements, {s['interactive']} interactive, "
-          f"{s['hidden_by_default']} hidden by default")
+    print(f"  界面控件总数(原始,含容器/库/重复)：{s['total']}")
+    print(f"  └ 带交互标记的控件(标签/属性看似可点)：{s['interactive']}")
+    print(f"  默认隐藏的控件(hidden)：{s['hidden_by_default']}")
 
     # Step 2: Source 静态扫描
-    print("\n[2/7] Scanning source code...")
+    print("\n[2/7] 扫描源代码 (source code)…")
     src_result = source_extractor.run(project_root)
     symbol_payload, call_graph_payload = function_graph_extractor.run(project_root)
     for dep in dep_roots:
@@ -195,13 +196,23 @@ def main():
     (out_dir / "call_graph.json").write_text(
         json.dumps(call_graph_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    # 源码扫描各项的中文标签（未列出的 key 原样打印）
+    _SRC_STAT_LABELS = {
+        "id_dispatchers": "id 分发块(switch/when 派发点击)",
+        "event_registrations": "事件监听注册(代码中 setOnXxxListener)",
+        "visibility_controls": "动态显隐控制",
+        "inflates": "布局加载(inflate)",
+        "data_driven_ui": "数据驱动界面",
+        "source_files_scanned": "已扫描源文件数",
+        "findings_with_enclosing_symbol": "成功定位到所属函数的发现数",
+    }
     for k, v in src_result["stats"].items():
-        print(f"  {k}: {v}")
-    print(f"  function_symbols: {symbol_payload['stats']['symbol_count']}")
-    print(f"  call_edges: {call_graph_payload['stats']['call_count']}")
+        print(f"  {_SRC_STAT_LABELS.get(k, k)}：{v}")
+    print(f"  函数总数(function symbols)：{symbol_payload['stats']['symbol_count']}")
+    print(f"  函数调用关系(call edges)：{call_graph_payload['stats']['call_count']}")
 
     # Step 3: 合并 → ground truth
-    print("\n[3/7] Building ground truth...")
+    print("\n[3/7] 合并为基准事实 (ground truth)…")
     gt = ground_truth_builder.build(
         xml_result,
         src_result,
@@ -211,22 +222,21 @@ def main():
     gt_path.write_text(json.dumps(gt, indent=2, ensure_ascii=False), encoding="utf-8")
 
     s = gt["coverage_stats"]
-    print(f"\nGround truth saved to {gt_path}")
-    print(f"  XML elements:            {s['xml_elements_total']}")
-    print(f"  Interactive (XML attr):  {s['xml_interactive']}")
-    print(f"  Interactive or bound:    {s['xml_interactive_or_bound']}")
-    print(f"  Behavior bound:          {s['xml_with_behavior_bound']}")
-    print(f"  Conditional visibility:  {s['xml_conditional_visibility']}")
-    print(f"  Dynamic gap (total):     {s['dynamic_gap_total']}")
-    print(f"  Dynamic gap (new):       {s['dynamic_gap_pure_new']}")
-    print(f"  Data-driven UI:          {s['data_driven_ui']}")
-    print(f"  Non-UI bindings:         {s['non_ui_bindings']}")
-    print(f"  Unmatched:               {s['unmatched']}")
+    print(f"\n  基准事实已保存：{gt_path}")
+    print(f"  可绑定控件(有 id、去重后)：{s['xml_elements_total']}")
+    print(f"  └ 标记可交互(XML attr)：{s['xml_interactive']}")
+    print(f"  可交互或已绑行为：{s['xml_interactive_or_bound']}")
+    print(f"  ★ 真正可交互-点击有行为(behavior-bound)：{s['xml_with_behavior_bound']}")
+    print(f"  条件显隐(conditional visibility)：{s['xml_conditional_visibility']}")
+    print(f"  动态控件-XML 中没有(dynamic gap)：{s['dynamic_gap_total']}（新增 {s['dynamic_gap_pure_new']}）")
+    print(f"  数据驱动界面(data-driven UI)：{s['data_driven_ui']}")
+    print(f"  非界面绑定-后台逻辑(non-UI)：{s['non_ui_bindings']}")
+    print(f"  未匹配(unmatched)：{s['unmatched']}")
 
     # ── 阶段二：导航与关联 ──
 
     # Step 4: 导航图提取
-    print("\n[4/7] Extracting navigation graph...")
+    print("\n[4/7] 提取导航图-屏幕跳转关系 (navigation graph)…")
     nav = navigation_extractor.run(project_root, dep_roots=dep_roots)
     nav_path = out_dir / "navigation_graph.json"
     nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -246,12 +256,12 @@ def main():
     external_nodes = ns.get("external_nodes", 0)
     total_edges = ns.get("total_edges", 0)
     by_type = ns.get("by_type", {})
-    print(f"\nNavigation graph saved to {nav_path}")
+    print(f"\n  导航图已保存：{nav_path}")
     print(
-        f"  Navigation candidates (L1): {cand_payload['stats']['total']} "
-        f"(kinds: {cand_payload['stats'].get('by_kind', {})})"
+        f"  导航线索-初步(candidates L1)：{cand_payload['stats']['total']} "
+        f"（分类：{cand_payload['stats'].get('by_kind', {})}）"
     )
-    print(f"  Inferred class→layout mappings: {len(nav.get('class_layouts', {}))}")
+    print(f"  推断出的「代码类↔界面文件」对应：{len(nav.get('class_layouts', {}))}")
 
     # Augment class→layout with inflate-site ownership (strongest deterministic
     # signal) — recovers screens that navigation analysis never reaches.
@@ -268,38 +278,45 @@ def main():
     inflate_owner_layouts = {_ly: next(iter(_cs)) for _ly, _cs in _layout_owners.items() if len(_cs) == 1}
     if added_mappings:
         nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"  Inflate-derived class→layout (new): {added_mappings}")
-    print(f"  Total nodes:     {total_nodes} "
-          f"({activity_nodes} activities, {fragment_nodes} fragments, {dialog_nodes} dialogs, {external_nodes} external)")
-    print(f"  Total edges:     {total_edges}")
+        print(f"  由「谁加载了哪个布局」新补出的对应(inflate-derived)：{added_mappings}")
+    print(f"  屏幕节点总数(screens)：{total_nodes} "
+          f"（整屏 {activity_nodes} / 区块 {fragment_nodes} / 弹窗 {dialog_nodes} / 外部 {external_nodes}）")
+    print(f"  屏幕间跳转总数(edges)：{total_edges}")
+    _EDGE_TYPE_LABELS = {
+        "activity": "跳到整屏页面",
+        "dialog": "打开对话框",
+        "commons_dialog": "打开通用弹窗",
+        "fragment": "切换区块",
+        "external_intent": "跳到外部应用",
+    }
     for t, c in by_type.items():
-        print(f"    {t}: {c}")
+        print(f"    └ {_EDGE_TYPE_LABELS.get(t, t)}：{c}")
 
     # Step 4b: Fragment 检测
-    print("\n[4b] Detecting fragments...")
+    print("\n[4b] 检测可复用区块 (fragments)…")
     frag_result = fragment_detector.run(project_root, dep_roots=dep_roots)
     (out_dir / "fragments.json").write_text(
         json.dumps(frag_result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     fs = frag_result["stats"]
-    print(f"  Fragments: {fs['total']} (by method: {fs.get('by_attach_method', {})})")
+    print(f"  区块挂载点(fragments)：{fs['total']}（按挂载方式：{fs.get('by_attach_method', {})}）")
     cov = fs.get("coverage", {})
     if cov.get("ast_available"):
-        print(f"  Coverage: {cov['attached_fragment_count']}/{cov['declared_fragment_count']} "
-              f"declared fragments have known host")
+        print(f"  宿主覆盖：{cov['attached_fragment_count']}/{cov['declared_fragment_count']} "
+              f"个声明的区块找到了所在屏幕")
         if cov.get("orphan_classes"):
-            print(f"  Orphan fragments (no known host): {cov['orphan_classes']}")
+            print(f"  孤儿区块-未找到宿主屏幕(orphan)：{cov['orphan_classes']}")
 
     # Step 4c: 动态 UI 检测
-    print("\n[4c] Detecting dynamic UI components...")
+    print("\n[4c] 检测动态创建的界面 (dynamic UI)…")
     dyn_result = dynamic_ui_extractor.run(project_root, dep_roots=dep_roots)
     (out_dir / "dynamic_ui.json").write_text(
         json.dumps(dyn_result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     ds = dyn_result["stats"]
-    print(f"  Dynamic elements: {ds['total_dynamic_elements']} "
-          f"(by method: {ds.get('by_creation_method', {})})")
-    print(f"  Adapter layouts: {ds['total_adapter_layouts']}")
+    print(f"  纯代码创建的控件(dynamic elements)：{ds['total_dynamic_elements']} "
+          f"（按方式：{ds.get('by_creation_method', {})}）")
+    print(f"  长列表每行布局(adapter layouts)：{ds['total_adapter_layouts']}")
 
     gt = ground_truth_builder.build(
         xml_result,
@@ -314,20 +331,27 @@ def main():
     bound = gt["coverage_stats"]["xml_with_behavior_bound"]
     cross_bound = inferred_stats.get("covered", 0)
     uncovered = inferred_stats.get("uncovered", 0)
+    _COVER_CAT_LABELS = {
+        "value_read_on_confirm": "弹窗内输入(点确认时读值)",
+        "dialog_action": "弹窗按钮(取消/关闭)",
+        "framework_managed": "框架自动管理",
+        "adapter_bindview": "列表项内控件",
+    }
     if total > 0:
         pct = (bound + cross_bound) / total * 100
-        print(f"\n  Behavior coverage: {bound + cross_bound}/{total} = {pct:.1f}%")
-        print(f"    direct:            {bound}")
+        print(f"\n  行为覆盖率：{bound + cross_bound}/{total} = {pct:.1f}%"
+              f"（真正可交互控件 / 应有行为的控件）")
+        print(f"    直接绑定(direct)：{bound}")
         if cross_bound:
-            print(f"    cross-component:   {cross_bound}")
+            print(f"    跨组件推断(cross-component)：{cross_bound}")
             for cat, count in sorted(inferred_stats.get("by_category", {}).items(), key=lambda x: -x[1]):
                 if cat != "programmatic":
-                    print(f"      {cat}: {count}")
+                    print(f"      └ {_COVER_CAT_LABELS.get(cat, cat)}：{count}")
         if uncovered > 0:
-            print(f"    uncovered:         {uncovered}")
+            print(f"    仍未找到行为(uncovered)：{uncovered}")
 
     # Step 4d: 行为链提取
-    print("\n[4d] Extracting behavior chains...")
+    print("\n[4d] 提取行为链-点击到后果 (behavior chains)…")
     all_xml_ids = {e["id"] for e in xml_result["elements"] if e.get("id")}
     bc_result = behavior_chain_extractor.run(src_result, call_graph_payload, project_root,
                                               xml_ids=all_xml_ids)
@@ -335,33 +359,38 @@ def main():
         json.dumps(bc_result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     bcs = bc_result["stats"]
-    print(f"  Bindings: {bcs['total_bindings']}, with chain: {bcs['with_effect_chain']}, "
-          f"no handler: {bcs['without_handler']}")
+    print(f"  事件绑定(bindings)：{bcs['total_bindings']}，已追出后果链：{bcs['with_effect_chain']}，"
+          f"无处理代码：{bcs['without_handler']}")
     by_confidence = bcs.get("by_confidence", {})
     if by_confidence:
-        print(f"  Chain confidence: {by_confidence}")
         static_count = by_confidence.get("static_analysis", 0)
         inferred_count = sum(
             by_confidence.get(key, 0)
             for key in ("fallback_analysis", "inferred")
         )
-        print(f"  Deterministic vs inferred: {static_count} static_analysis, {inferred_count} inferred")
+        print(f"  链的可信度(confidence)：{by_confidence}")
+        print(f"  确定 vs 推断：确定(static){static_count}，推断(inferred){inferred_count}")
     if bcs.get("handler_resolution"):
         hrs = {k: v for k, v in bcs["handler_resolution"].items() if v}
         if hrs:
-            print(f"  Handler resolution: {hrs}")
+            print(f"  处理代码写法(handler resolution)：{hrs}")
     if bcs.get("fallback_chain"):
-        print(f"  Fallback chain: {bcs['fallback_chain']}")
-    print(f"  Max depth: {bcs['max_chain_depth']}, by step: {bcs.get('by_step_type', {})}")
+        print(f"  兜底链(fallback chain)：{bcs['fallback_chain']}")
+    _STEP_LABELS = {
+        "call": "方法调用(中间环节)", "navigate": "页面跳转", "ui_update": "改界面状态",
+        "condition": "条件分支", "async": "异步/后台", "ui_feedback": "用户反馈(Toast等)",
+    }
+    steps_cn = {_STEP_LABELS.get(k, k): v for k, v in bcs.get("by_step_type", {}).items()}
+    print(f"  链最深(max depth)：{bcs['max_chain_depth']}，各类步骤：{steps_cn}")
 
     # Step 5: Gap 合并
     gap_path = out_dir / "gap_analysis.json"
     gap = {"stats": {"total_resolved": 0, "by_gap_type": {}, "merged_into_gt": False}, "resolved": []}
     if gap_path.exists():
         gap = json.loads(gap_path.read_text(encoding="utf-8"))
-        print(f"\n[5/7] Gap analysis loaded: {gap['stats']['total_resolved']} resolved items")
+        print(f"\n[5/7] 缺口补充已载入(gap analysis)：{gap['stats']['total_resolved']} 项")
         for k, v in gap["stats"].get("by_gap_type", {}).items():
-            print(f"  {k}: {v}")
+            print(f"  {k}：{v}")
         # 将 gap 条目合并到 ground_truth 的 dynamic_gap 中
         for item in gap.get("resolved", []):
             gt.setdefault("dynamic_gap", []).append({
@@ -375,12 +404,12 @@ def main():
                 "resolved_xml_id": item.get("resolved_xml_id", ""),
             })
         gap["stats"]["merged_into_gt"] = len(gap.get("resolved", []))
-        print(f"  Merged {gap['stats']['merged_into_gt']} items into ground_truth.dynamic_gap")
+        print(f"  已合并 {gap['stats']['merged_into_gt']} 项到基准事实的动态控件中")
     else:
-        print("\n[5/7] No gap_analysis.json found — run merge_gap.py or sub-agent first.")
+        print("\n[5/7] 未找到 gap_analysis.json —— 该补充步骤可选，跳过（正常）。")
 
     # Step 6: 动态组装 UI DAG — launcher from AndroidManifest MAIN/LAUNCHER
-    print("\n[6/7] Assembling UI DAG...")
+    print("\n[6/7] 组装可达屏幕树 (UI DAG)…")
     from extractors.ui_dag_assembler import assemble, assemble_all_flat_paths, assemble_flat_paths, set_output_dir
     from extractors.app_model_builder import build_and_write
     from extractors.app_model_schema import path_display_report_from_segments
@@ -414,18 +443,18 @@ def main():
                 launcher_layout = cnode.get("layout", launcher_layout) or launcher_layout
                 launcher_class = cname
                 break
-    print(f"  Root screen: {launcher_class} (layout: {launcher_layout})")
+    print(f"  根屏幕-启动页(launcher)：{launcher_class}（布局 {launcher_layout}）")
 
     dag = assemble(launcher_layout, max_depth=8)
     (out_dir / "ui_dag.json").write_text(
         json.dumps(dag, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     ag = dag.get("aggregate_stats", {})
-    print(f"  Reachable screens:       {ag.get('screens', 0)}")
-    print(f"  Total elements:          {ag.get('elements', 0)}")
-    print(f"  Interactive:             {ag.get('interactive', 0)}")
-    print(f"  With behavior:           {ag.get('with_behavior', 0)}")
-    print(f"  With navigation target:  {ag.get('with_navigation', 0)}")
+    print(f"  从启动页可达的屏幕(reachable)：{ag.get('screens', 0)}")
+    print(f"  这些屏幕上的控件总数：{ag.get('elements', 0)}")
+    print(f"  └ 可交互：{ag.get('interactive', 0)}")
+    print(f"  └ 带行为：{ag.get('with_behavior', 0)}")
+    print(f"  └ 带跳转目标：{ag.get('with_navigation', 0)}")
 
     flat = assemble_flat_paths(launcher_layout, max_depth=8)
     all_flat, coverage_report = assemble_all_flat_paths(include_report=True)
@@ -517,14 +546,14 @@ def main():
 
     am_counts = build_and_write(out_dir, project_root, flat, nav, gt, xml_result)
     print(
-        f"  UI effect paths: {effect_paths.get('path_count', 0)} "
-        f"(kinds: {effect_paths.get('stats', {}).get('by_effect_kind', {})})"
+        f"  界面效果路径(UI effect paths)：{effect_paths.get('path_count', 0)} "
+        f"（分类：{effect_paths.get('stats', {}).get('by_effect_kind', {})}）"
     )
-    print(f"  App model: {am_counts}")
+    print(f"  App 模型(app model)：{am_counts}")
 
     # ── 验证（仅在 --validate 时执行） ────────────────
     if args.validate:
-        print("\n[V] Running verification...")
+        print("\n[V] 运行交叉验证 (verification)…")
         from extractors.ast_index import build_class_hierarchy, _resolve_android_base
         from verification import manifest_verifier, layout_verifier
         from verification.bytecode_verifier import bytecode_verifier as run_bytecode_verifier
@@ -548,7 +577,7 @@ def main():
     # ── 阶段三：Spec 生成 ──
 
     # Step 7: 为导航图中的每个屏幕生成 HarmonyOS 迁移 spec
-    print("\n[7/7] Generating HarmonyOS migration specs...")
+    print("\n[7/7] 生成每屏的鸿蒙迁移说明书 (specs)…")
     specs_dir = out_dir / "specs"
     specs_dir.mkdir(exist_ok=True)
 
@@ -563,16 +592,16 @@ def main():
                        spec_version="2.0")
 
     generated = len(list(specs_dir.glob("*_spec.json")))
-    print(f"  Generated {generated} specs in output/specs/")
+    print(f"  已生成 {generated} 份说明书 → output/specs/")
 
     if spec_stats and spec_stats["total_chains"] > 0:
         ss = spec_stats
-        print(f"\n  Binding assignment: {ss['total_chains']} chains"
-              f" → {ss['assigned']} assigned, {ss['orphan']} orphan, {ss['duplicated']} duplicated")
+        print(f"\n  行为链归属：{ss['total_chains']} 条"
+              f" → 已分配 {ss['assigned']}，无归属 {ss['orphan']}，重复收走 {ss['duplicated']}")
         if ss.get("fallback_claimed"):
-            print(f"  Fallback claimed: {ss['fallback_claimed']} (handler_class→layout)")
-        print(f"  Synthetic: {ss['synthetic']} (cross-component)")
-        print(f"  Total event_bindings in specs: {ss['total_event_bindings']}")
+            print(f"  兜底认领(handler_class→layout)：{ss['fallback_claimed']}")
+        print(f"  合成绑定-无监听控件(synthetic)：{ss['synthetic']}")
+        print(f"  说明书中的事件绑定总数：{ss['total_event_bindings']}")
 
     # Non-UI component model: route orphan behavior-chains (services, app
     # widgets, receivers, listeners, playback infra…) to a component-level home
@@ -599,13 +628,13 @@ def main():
     # screen specs that drive it, so a screen-translating agent sees the coupling.
     link = inject_screen_backrefs(non_ui, specs_dir)
     nus = non_ui["stats"]
-    print(f"\n  Non-UI components: {nus['components']} from {nus['behaviors']} orphan chains"
-          f" (by kind: {nus['by_kind']}, by source: {nus['by_kind_source']})")
-    print(f"  Non-UI ↔ screen links: {nus['screen_links']} caller edges to screens;"
-          f" non_ui_dependencies written into {link['screen_specs_linked']} specs"
-          f" ({nus['components_with_callers']}/{nus['components']} components have callers)")
+    print(f"\n  非界面组件(non-UI: 服务/卡片/接收器/监听器等)：{nus['components']} 个，来自 {nus['behaviors']} 条无归属行为链"
+          f"（按类型：{nus['by_kind']}；按判定来源：{nus['by_kind_source']}）")
+    print(f"  非界面组件 ↔ 屏幕关联：{nus['screen_links']} 条调用边指向屏幕；"
+          f"已把依赖写入 {link['screen_specs_linked']} 份说明书"
+          f"（{nus['components_with_callers']}/{nus['components']} 个组件有调用者）")
     if nus["excluded_ui_chains"]:
-        print(f"  Excluded UI orphan chains (left for screen path): {nus['excluded_ui_chains']}")
+        print(f"  排除的界面类无归属链(留给屏幕路径处理)：{nus['excluded_ui_chains']}")
 
     # Combined behavior coverage: chains that found a home — claimed by a screen
     # spec OR routed to a non-UI component — over all extracted chains. The
@@ -616,11 +645,11 @@ def main():
         homed = spec_stats["assigned"] + nus["behaviors"]
         pending_ui = sum(nus["excluded_ui_chains"].values())
         no_handler = nus["unclassified_orphan_chains"]
-        print(f"\n  Behavior coverage (screen + non-UI): {homed}/{total} = {homed / total * 100:.1f}%"
-              f"  [screen {spec_stats['assigned']} + non-UI {nus['behaviors']}]")
-        print(f"    homeless: {total - homed}  (UI orphan pending {pending_ui} + no-handler {no_handler})")
+        print(f"\n  行为总覆盖率(屏幕 + 非界面)：{homed}/{total} = {homed / total * 100:.1f}%"
+              f"  [屏幕 {spec_stats['assigned']} + 非界面 {nus['behaviors']}]")
+        print(f"    仍无归属：{total - homed}（界面类待屏幕路径 {pending_ui} + 无处理代码 {no_handler}）")
 
-    print("\nDone. Output files:")
+    print("\n完成。输出文件：")
     for name in ["static_xml.json", "source_findings.json", "ground_truth.json",
                  "function_symbols.json", "call_graph.json",
                  "navigation_graph.json", "navigation_candidates.json",
