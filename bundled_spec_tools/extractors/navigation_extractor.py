@@ -141,7 +141,23 @@ def _find_layout_for_class(class_name: str) -> str:
     return fallback
 
 
+# Leaf-name suffixes that are never a navigable screen — a callback, view holder,
+# list adapter, listener or observer is an implementation collaborator, not a
+# destination. They must be excluded even when their (often inner) name contains
+# "Dialog"/"BottomSheet" (e.g. ReorderDialogAdapter$HeaderViewHolder,
+# MainActivity$AntennaPodBottomSheetCallback), which would otherwise be typed as a
+# dialog screen and pollute the navigation graph and feature taxonomy.
+_NON_SCREEN_SUFFIXES = ("Callback", "ViewHolder", "Holder", "Adapter", "Listener", "Observer")
+
+
+def _is_non_screen_class(class_name: str) -> bool:
+    leaf = (class_name or "").rsplit("$", 1)[-1]
+    return leaf.endswith(_NON_SCREEN_SUFFIXES)
+
+
 def _is_dialog_class(class_name: str) -> bool:
+    if _is_non_screen_class(class_name):
+        return False
     return bool(class_name) and class_name[0].isupper() and ("Dialog" in class_name or "BottomSheet" in class_name)
 
 
@@ -918,6 +934,13 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
         _HIERARCHY = None
 
     # Build nodes
+    # Drop edges that touch a non-screen collaborator (adapter/holder/callback/…).
+    # Adapter→host out-edges were already re-homed to the host earlier, so by this
+    # point such endpoints are spurious destinations, not real navigation.
+    unique_edges = [
+        e for e in unique_edges
+        if not _is_non_screen_class(e["from"]) and not _is_non_screen_class(e["to"])
+    ]
     all_class_names = set()
     for e in unique_edges:
         all_class_names.add(e["from"])
@@ -925,6 +948,8 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
     # Add AST-detected Activity classes as explicit nodes
     if _HIERARCHY and _resolve_android_base is not None:
         for fqn, info in _HIERARCHY.items():
+            if _is_non_screen_class(info.name):
+                continue
             if _resolve_android_base(fqn, _HIERARCHY) in ("activity", "dialog"):
                 all_class_names.add(info.name)
                 if info.name not in _INFERRED_LAYOUTS and info.base_class:
