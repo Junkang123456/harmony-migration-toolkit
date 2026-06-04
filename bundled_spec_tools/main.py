@@ -224,9 +224,9 @@ def main():
     s = gt["coverage_stats"]
     print(f"\n  基准事实已保存：{gt_path}")
     print(f"  可绑定控件(有 id、去重后)：{s['xml_elements_total']}")
-    print(f"  └ 标记可交互(XML attr)：{s['xml_interactive']}")
-    print(f"  可交互或已绑行为：{s['xml_interactive_or_bound']}")
-    print(f"  ★ 真正可交互-点击有行为(behavior-bound)：{s['xml_with_behavior_bound']}")
+    print(f"  └ 带交互信号-可点或已绑行为(interactive-or-bound)：{s['xml_interactive_or_bound']}")
+    print(f"      ├ ★ 真正可交互-已确认点击行为(behavior-bound)：{s['xml_with_behavior_bound']}")
+    print(f"      └ 仅 XML 标记可点、未追到行为：{s['xml_interactive_or_bound'] - s['xml_with_behavior_bound']}")
     print(f"  条件显隐(conditional visibility)：{s['xml_conditional_visibility']}")
     print(f"  动态控件-XML 中没有(dynamic gap)：{s['dynamic_gap_total']}（新增 {s['dynamic_gap_pure_new']}）")
     print(f"  数据驱动界面(data-driven UI)：{s['data_driven_ui']}")
