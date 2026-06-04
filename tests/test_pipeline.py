@@ -127,13 +127,14 @@ def test_pipeline_minimal_fixture_schema():
     spec_files = list((inter / "7_specs").glob("activity_main_spec.json"))
     if spec_files:
         spec = json.loads(spec_files[0].read_text(encoding="utf-8"))
-        assert spec.get("spec_version") == "2.0"
-        assert "L0_structure" in spec
-        assert "L1_behavior" in spec
-        assert spec["L0_structure"]["ui_tree"] is not None
-        assert isinstance(spec["L0_structure"]["fragments"], list)
-        assert isinstance(spec["L0_structure"]["dynamic_elements"], list)
-        assert isinstance(spec["L1_behavior"]["event_bindings"], list)
+        assert "ui" in spec
+        assert spec["ui"]["tree"] is not None
+        assert isinstance(spec["ui"]["elements"], list)
+        assert isinstance(spec["ui"].get("inflated_layouts", []), list)
+        assert isinstance(spec["ui"].get("programmatic_views", []), list)
+        assert "behavior" in spec
+        assert isinstance(spec["behavior"]["event_bindings"], list)
+        assert isinstance(spec["behavior"].get("fragments", []), list)
 
 
 def test_stage0_bundled_scanner_uses_isolated_output(tmp_path: Path):
@@ -163,6 +164,29 @@ def test_stage0_bundled_scanner_uses_isolated_output(tmp_path: Path):
         assert (facts / "behavior_chains.json").is_file()
         assert (facts / "app_model" / "index.json").is_file()
         assert (facts / "manifest.json").is_file()
+        bc = json.loads((facts / "behavior_chains.json").read_text(encoding="utf-8"))
+        assert "handler_resolution" in bc["stats"]
+        assert isinstance(bc["stats"]["handler_resolution"], dict)
+        assert "by_confidence" in bc["stats"]
+        assert isinstance(bc["stats"]["by_confidence"], dict)
+        assert "handler_resolution" in bc["behavior_chains"][0]
+        assert "confidence" in bc["behavior_chains"][0]
+        assert "claim_hints" in bc["behavior_chains"][0]
+        assert isinstance(bc["behavior_chains"][0]["claim_hints"].get("owner_classes"), list)
+
+        gt = json.loads((facts / "ground_truth.json").read_text(encoding="utf-8"))
+        assert "inferred_event_bindings" in gt
+        assert isinstance(gt["inferred_event_bindings"], list)
+        assert "inferred_event_binding_stats" in gt
+        assert isinstance(gt["inferred_event_binding_stats"], dict)
+
+        spec = json.loads((facts / "specs" / "activity_main_spec.json").read_text(encoding="utf-8"))
+        assert isinstance(spec.get("behavior", {}).get("event_bindings", []), list)
+        for eb in spec.get("behavior", {}).get("event_bindings", []):
+            if eb.get("binding_source") == "unbound_inference":
+                assert eb.get("confidence") == "inferred"
+                assert "claim_hints" in eb
+
         assert not (facts / "app_model" / "features" / stale.name).exists()
         assert not (out / "intermediate" / "0_android_facts.__scan_tmp").exists()
     finally:
@@ -206,11 +230,17 @@ def test_pipeline_stage6_optional_viewer_export(tmp_path: Path):
         ]
     )
 
-    assert (out / "viewer" / "feature_tree.html").is_file()
-    assert (out / "viewer" / "feature_tree.v1.json").is_file()
-    assert (out / "viewer" / "taxonomy_report.json").is_file()
-    assert (out / "viewer" / "vendor" / "vis-network.min.js").is_file()
     assert not (out / "agent_bundle.v1.json").exists()
+    # The viewer HTML/vendor assets are optional and may be absent from a checkout.
+    # When present, stage 6 emits the full viewer; when absent it skips gracefully
+    # (pipeline still exits 0) and writes no viewer.
+    if (ROOT / "viewer" / "feature_tree.html").is_file():
+        assert (out / "viewer" / "feature_tree.html").is_file()
+        assert (out / "viewer" / "feature_tree.v1.json").is_file()
+        assert (out / "viewer" / "taxonomy_report.json").is_file()
+        assert (out / "viewer" / "vendor" / "vis-network.min.js").is_file()
+    else:
+        assert not (out / "viewer" / "feature_tree.html").exists()
 
 
 def test_pipeline_stage_dependency_errors(tmp_path: Path):
