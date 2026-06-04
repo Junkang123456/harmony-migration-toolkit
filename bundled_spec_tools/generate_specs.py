@@ -123,6 +123,7 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                        layout_trees=None, fragments=None,
                        dynamic_elements=None, behavior_chains=None,
                        lifecycle_hooks=None, adapter_layouts=None,
+                       inflate_owner_layouts=None,
                        spec_version="1.0"):
     """为导航图中的每个屏幕生成 HarmonyOS 迁移 spec。"""
     specs_dir = Path(specs_dir)
@@ -258,6 +259,14 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
                 if node.get("layout", "") == layout_name:
                     class_name = cn
                     break
+        # Fill-only fallback: a layout that no navigation-derived mapping owns
+        # (audioplayer_fragment, fragment_subscriptions, item layouts …) gets its
+        # owner from the real inflate site (R.layout.x inside class Y). This is
+        # deterministic ground truth, kept single-owner so shared/partial layouts
+        # (headers, cards, include-only views) stay honestly unowned. It only fills
+        # gaps — never overrides a mapping the navigation graph already produced.
+        if not class_name and inflate_owner_layouts:
+            class_name = inflate_owner_layouts.get(layout_name, "")
 
         # 查找导航边
         nav_out = []

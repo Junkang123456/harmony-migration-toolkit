@@ -257,6 +257,14 @@ def main():
     from extractors.inflate_owner_map import build_inflate_class_layouts, merge_into_nav
     inflate_class_layouts = build_inflate_class_layouts(src_result, call_graph_payload)
     added_mappings = merge_into_nav(nav, inflate_class_layouts)
+    # Invert to layout → owning class for spec resolution, keeping only layouts with a
+    # single inflating class so the spec's `class`/`screen_type` is filled from real
+    # ground truth without guessing on shared/partial layouts (see generate_all_specs).
+    _layout_owners: dict[str, set[str]] = {}
+    for _cls, _layouts in inflate_class_layouts.items():
+        for _ly in _layouts:
+            _layout_owners.setdefault(_ly, set()).add(_cls)
+    inflate_owner_layouts = {_ly: next(iter(_cs)) for _ly, _cs in _layout_owners.items() if len(_cs) == 1}
     if added_mappings:
         nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"  Inflate-derived class→layout (new): {added_mappings}")
@@ -545,6 +553,7 @@ def main():
                        behavior_chains=bc_result.get("behavior_chains"),
                        lifecycle_hooks=bc_result.get("lifecycle_hooks"),
                        adapter_layouts=dyn_result.get("adapter_layouts"),
+                       inflate_owner_layouts=inflate_owner_layouts,
                        spec_version="2.0")
 
     generated = len(list(specs_dir.glob("*_spec.json")))

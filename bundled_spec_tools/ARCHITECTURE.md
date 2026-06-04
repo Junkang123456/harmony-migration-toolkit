@@ -619,3 +619,4 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 | 2026-06-04 | 非 UI 组件揭示双向联系（§5.15）：经 `call_graph` 精确类名匹配补 `used_by`（调用者类 + 是否屏幕）；`inject_screen_backrefs()` 以 spec 的 `class` 字段为权威键把组件反链写入屏幕 spec 的 `non_ui_dependencies`；匹配不上不模糊猜测 |
 | 2026-06-04 | 入口脚本强制 UTF-8 stdout/stderr：进度打印含 → / ↔ 等字符,stdout 被管道/重定向捕获时在非 UTF-8 locale(Windows cp936)会 UnicodeEncodeError 整体崩溃,现 `reconfigure(encoding="utf-8")` 兜底 |
 | 2026-06-04 | 导航节点排除非屏幕协作类(`_is_non_screen_class`)：叶名以 Callback/ViewHolder/Holder/Adapter/Listener/Observer 结尾者不再因含 "Dialog"/"BottomSheet" 子串被误判为 dialog 屏幕(如 `ReorderDialogAdapter$HeaderViewHolder`、`MainActivity$AntennaPodBottomSheetCallback`);AntennaPod nav 节点 110→105 |
+| 2026-06-04 | spec 空 class 仅填空兜底：layout→class 由 `inflate_class_layouts` 反转(单一归属)得到真实 inflate 站点所有权,经 `inflate_owner_layouts` 传入 `generate_all_specs`,只填导航未解析的 layout(audioplayer_fragment→AudioPlayerFragment 等),共享/局部布局诚实留空;AntennaPod 空 class 43→31、unknown screen_type 50→38 |
