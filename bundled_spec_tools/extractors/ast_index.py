@@ -75,6 +75,46 @@ def _source_files(root: Path) -> list[Path]:
     return sorted(list(root.rglob("src/main/**/*.java")) + list(root.rglob("src/main/**/*.kt")))
 
 
+# Parsed-tree cache. A single pipeline run parses the same source files many times
+# (build_class_hierarchy alone is called from navigation, source, fragment and
+# validation paths; fragment_detector re-scans every file per detection mode). The
+# tree-sitter parse is the dominant cost, so cache (source_bytes, root_node) keyed by
+# (abspath, mtime_ns, size). Trees are immutable once parsed and only read, so reuse is
+# safe. The tree object is held in the tuple to keep its nodes alive.
+_PARSE_CACHE: dict[str, tuple[int, int, bytes, Any, Any]] = {}
+
+
+def parse_file(src_path: Path) -> tuple[bytes, Any] | None:
+    """Parse a Kotlin/Java source file, returning (source_bytes, root_node).
+
+    Cached by path + mtime + size so repeated parses across extractors are free.
+    Returns None when tree-sitter is unavailable or the file fails to parse.
+    """
+    if get_parser is None:
+        return None
+    language = _language_for(src_path)
+    if not language:
+        return None
+    try:
+        st = src_path.stat()
+    except OSError:
+        return None
+    key = str(src_path)
+    cached = _PARSE_CACHE.get(key)
+    if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return cached[2], cached[3]
+    try:
+        parser = get_parser(language)
+        source = src_path.read_bytes()
+        tree = parser.parse(source.decode("utf-8"))
+    except Exception:
+        return None
+    root_node = tree.root_node()
+    # Keep `tree` referenced in the tuple so its nodes stay valid.
+    _PARSE_CACHE[key] = (st.st_mtime_ns, st.st_size, source, root_node, tree)
+    return source, root_node
+
+
 def _rel_path(path: Path, root: Path, file_prefix: str = "") -> str:
     rel = path.relative_to(root).as_posix()
     return f"{file_prefix}/{rel}" if file_prefix else rel
@@ -483,12 +523,24 @@ def _is_view_in_chain(info: ClassInfo, hierarchy: dict[str, ClassInfo],
     return False
 
 
+_HIERARCHY_CACHE: dict[tuple, dict[str, "ClassInfo"]] = {}
+
+
 def build_class_hierarchy(
     project_root: str,
     dep_roots: list[str] | None = None,
     file_prefix: str = "",
 ) -> dict[str, ClassInfo]:
-    """构建项目全量类索引，含继承关系。Key 为 FQN（package.ClassName）。"""
+    """构建项目全量类索引，含继承关系。Key 为 FQN（package.ClassName）。
+
+    Memoized per (project_root, dep_roots, file_prefix): the source tree does not
+    change within a run, and this is called from several extractors.
+    """
+    cache_key = (str(project_root), tuple(dep_roots or ()), file_prefix)
+    cached = _HIERARCHY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     hierarchy: dict[str, ClassInfo] = {}
     roots: list[tuple[str, str]] = [(project_root, file_prefix)]
     if dep_roots:
@@ -500,13 +552,10 @@ def build_class_hierarchy(
             language = _language_for(src_path)
             if language is None or not language:
                 continue
-            try:
-                parser = get_parser(language)
-                source = src_path.read_bytes()
-                tree = parser.parse(source.decode("utf-8"))
-            except Exception:
+            parsed = parse_file(src_path)
+            if parsed is None:
                 continue
-            root_node = tree.root_node()
+            source, root_node = parsed
             rel = _rel_path(src_path, root, prefix)
             package = _package_name(source, root_node, language)
             for node in _walk(root_node):
@@ -527,6 +576,7 @@ def build_class_hierarchy(
                     line=_line(node),
                     is_interface=node.kind() == "interface_declaration",
                 )
+    _HIERARCHY_CACHE[cache_key] = hierarchy
     return hierarchy
 
 
@@ -555,14 +605,11 @@ def build_project_index(
         language = _language_for(src_path)
         if not language:
             continue
-        try:
-            parser = get_parser(language)
-            source = src_path.read_bytes()
-            tree = parser.parse(source.decode("utf-8"))
-        except Exception:
+        parsed = parse_file(src_path)
+        if parsed is None:
             continue
+        source, root_node = parsed
         rel = _rel_path(src_path, root, file_prefix)
-        root_node = tree.root_node()
         file_roots.append((src_path, source, language, rel, root_node))
         package = _package_name(source, root_node, language)
         fallback_owner = src_path.stem

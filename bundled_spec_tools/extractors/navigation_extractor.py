@@ -147,12 +147,30 @@ def _find_layout_for_class(class_name: str) -> str:
 # "Dialog"/"BottomSheet" (e.g. ReorderDialogAdapter$HeaderViewHolder,
 # MainActivity$AntennaPodBottomSheetCallback), which would otherwise be typed as a
 # dialog screen and pollute the navigation graph and feature taxonomy.
-_NON_SCREEN_SUFFIXES = ("Callback", "ViewHolder", "Holder", "Adapter", "Listener", "Observer")
+_NON_SCREEN_SUFFIXES = ("Callback", "ViewHolder", "Holder", "Adapter", "Listener", "Observer", "Builder")
 
 
 def _is_non_screen_class(class_name: str) -> bool:
     leaf = (class_name or "").rsplit("$", 1)[-1]
     return leaf.endswith(_NON_SCREEN_SUFFIXES)
+
+
+def _dereference_starter(class_name: str, known_by_lower: dict[str, str]) -> str:
+    """Map a generated ActivityStarter wrapper to the real screen it launches.
+
+    The ActivityStarter annotation processor emits `XxxActivityStarter` helpers whose
+    `start()`/`getIntent()` are what navigation detection sees — but the actual screen
+    is `XxxActivity`. Rewrite to the real known class only when the stripped name
+    resolves (case-insensitively, since the generator may re-case it, e.g.
+    `OnlineFeedviewActivityStarter` → `OnlineFeedViewActivity`), so we never invent a
+    destination or a fabricated `xxx_activity_starter` layout.
+    """
+    if class_name.endswith("Starter"):
+        base = class_name[: -len("Starter")]
+        canonical = known_by_lower.get(base.lower()) if base else None
+        if canonical:
+            return canonical
+    return class_name
 
 
 def _is_dialog_class(class_name: str) -> bool:
@@ -632,7 +650,14 @@ def _node_type(class_name: str) -> str:
     if _HIERARCHY is not None and _resolve_android_base is not None:
         t = _resolve_android_base(class_name, _HIERARCHY)
         if t in ("activity", "dialog", "fragment"):
-            return t if t != "fragment" else "activity"
+            # Keep fragment distinct from activity: HarmonyOS maps Activity→UIAbility
+            # but Fragment→@Component, so collapsing the two misdirects translation.
+            # A DialogFragment/BottomSheetDialogFragment resolves to "fragment" by
+            # inheritance but is *presented* as a modal — map it to "dialog"
+            # (CustomDialog) to match how it should migrate, not its base class.
+            if t == "fragment" and _is_dialog_class(class_name):
+                return "dialog"
+            return t
     if _is_dialog_class(class_name):
         return "dialog"
     return "activity"
@@ -934,6 +959,28 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
         _HIERARCHY = None
 
     # Build nodes
+    # First, dereference generated ActivityStarter wrappers (XxxActivityStarter →
+    # XxxActivity) so edges point at the real screen and we don't fabricate a
+    # `xxx_activity_starter` layout. Only rewrites when the stripped name is a real
+    # known class. Clear stale to_layout so it's recomputed for the true target.
+    known_leaf_names: set[str] = set()
+    if _HIERARCHY:
+        known_leaf_names = {info.name for info in _HIERARCHY.values()}
+    known_leaf_names |= {e["from"] for e in unique_edges} | {e["to"] for e in unique_edges}
+    # Case-insensitive index so a re-cased generated name still resolves to the real
+    # class. Skip Starter wrappers themselves so they never become their own target.
+    known_by_lower = {
+        n.lower(): n for n in known_leaf_names if not n.endswith("Starter")
+    }
+    for e in unique_edges:
+        new_from = _dereference_starter(e["from"], known_by_lower)
+        new_to = _dereference_starter(e["to"], known_by_lower)
+        if new_from != e["from"]:
+            e["from"] = new_from
+        if new_to != e["to"]:
+            e["to"] = new_to
+            e["to_layout"] = ""  # recomputed from the real target node below
+
     # Drop edges that touch a non-screen collaborator (adapter/holder/callback/…).
     # Adapter→host out-edges were already re-homed to the host earlier, so by this
     # point such endpoints are spurious destinations, not real navigation.
@@ -992,6 +1039,7 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
         "total_nodes": len(nodes),
         "total_edges": len(unique_edges),
         "activity_nodes": sum(1 for n in nodes.values() if n["type"] == "activity"),
+        "fragment_nodes": sum(1 for n in nodes.values() if n["type"] == "fragment"),
         "dialog_nodes": sum(1 for n in nodes.values() if n["type"] == "dialog"),
         "external_nodes": sum(1 for n in nodes.values() if n["type"] == "external"),
         "by_type": {},

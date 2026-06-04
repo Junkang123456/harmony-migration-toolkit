@@ -18,6 +18,7 @@ from extractors.ast_index import (
     _language_for as _ast_language_for, _rel_path as _ast_rel_path,
     _class_name as _ast_class_name_node,
     _first_named_child as _ast_first_child,
+    parse_file as _ast_parse_file,
 )
 
 try:
@@ -287,13 +288,10 @@ def _ast_fragment_transactions(project_root: str, dep_roots: list[str] | None = 
             language = _ast_language_for(src_path)
             if not language:
                 continue
-            try:
-                parser = _get_parser(language)
-                source = src_path.read_bytes()
-                tree = parser.parse(source.decode("utf-8"))
-            except Exception:
+            parsed = _ast_parse_file(src_path)
+            if parsed is None:
                 continue
-            root_node = tree.root_node()
+            source, root_node = parsed
             rel = _ast_rel_path(src_path, root, prefix)
 
             for node in _ast_walk(root_node):
@@ -376,13 +374,10 @@ def _ast_load_fragment_calls(project_root: str, dep_roots: list[str] | None = No
             language = _ast_language_for(src_path)
             if not language:
                 continue
-            try:
-                parser = _get_parser(language)
-                source = src_path.read_bytes()
-                tree = parser.parse(source.decode("utf-8"))
-            except Exception:
+            parsed = _ast_parse_file(src_path)
+            if parsed is None:
                 continue
-            root_node = tree.root_node()
+            source, root_node = parsed
             rel = _ast_rel_path(src_path, root, prefix)
             source_text = source.decode("utf-8", errors="ignore")
 
@@ -500,13 +495,10 @@ def _ast_show_fragment_calls(project_root: str, dep_roots: list[str] | None = No
             language = _ast_language_for(src_path)
             if not language:
                 continue
-            try:
-                parser = _get_parser(language)
-                source = src_path.read_bytes()
-                tree = parser.parse(source.decode("utf-8"))
-            except Exception:
+            parsed = _ast_parse_file(src_path)
+            if parsed is None:
                 continue
-            root_node = tree.root_node()
+            source, root_node = parsed
             rel = _ast_rel_path(src_path, root, prefix)
 
             for node in _ast_walk(root_node):

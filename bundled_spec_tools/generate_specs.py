@@ -468,6 +468,16 @@ def generate_all_specs(nav, gt, paths, dag, specs_dir, *,
             if screen_adapters:
                 behavior_entry["adapter_bindings"] = screen_adapters
 
+            # Keep ui.elements.is_interactive consistent with brief: a control with a
+            # resolved event binding is interactive even when its XML tag (ImageView,
+            # TextView, …) is not inherently interactive. Otherwise the same control
+            # reads as interactive in brief.interactive_controls but is_interactive=false
+            # in ui.elements, which is contradictory for a translating agent.
+            bound_ui_ids = {eb.get("element_id", "") for eb in event_bindings if eb.get("element_id")}
+            for ue in ui_elements:
+                if ue.get("id") in bound_ui_ids:
+                    ue["is_interactive"] = True
+
             brief = _build_brief(
                 ui_elements, event_bindings, navigation, entry_points,
                 screen_fragments, screen_adapters, screen_lifecycle,

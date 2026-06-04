@@ -35,10 +35,24 @@ from extractors.app_model_schema import build_path_record, ui_point_id
 
 
 def _load_json(name: str) -> dict:
-    p = Path(__file__).parent.parent / "output" / name
+    p = _OUTPUT_DIR / name
     if p.exists():
         return json.loads(p.read_text(encoding="utf-8"))
     return {}
+
+
+# Directory the assembler reads its inputs (navigation_graph/ground_truth/…) from.
+# Defaults to bundled_spec_tools/output for standalone use, but main.py points it at
+# the real --out dir: otherwise, when run with --out (as the pipeline does, writing to
+# intermediate/0_android_facts), assemble() would read a stale/absent default dir and
+# silently produce an empty DAG.
+_OUTPUT_DIR: Path = Path(__file__).parent.parent / "output"
+
+
+def set_output_dir(path) -> None:
+    """Point the assembler at the directory where stage-0 facts actually live."""
+    global _OUTPUT_DIR
+    _OUTPUT_DIR = Path(path)
 
 
 def _layout_to_class(layout: str, nav_data: dict) -> str:

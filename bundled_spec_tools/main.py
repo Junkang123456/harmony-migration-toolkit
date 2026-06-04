@@ -241,6 +241,7 @@ def main():
     ns = nav.get("stats", {})
     total_nodes = ns.get("total_nodes", 0)
     activity_nodes = ns.get("activity_nodes", 0)
+    fragment_nodes = ns.get("fragment_nodes", 0)
     dialog_nodes = ns.get("dialog_nodes", 0)
     external_nodes = ns.get("external_nodes", 0)
     total_edges = ns.get("total_edges", 0)
@@ -269,7 +270,7 @@ def main():
         nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"  Inflate-derived class→layout (new): {added_mappings}")
     print(f"  Total nodes:     {total_nodes} "
-          f"({activity_nodes} activities, {dialog_nodes} dialogs, {external_nodes} external)")
+          f"({activity_nodes} activities, {fragment_nodes} fragments, {dialog_nodes} dialogs, {external_nodes} external)")
     print(f"  Total edges:     {total_edges}")
     for t, c in by_type.items():
         print(f"    {t}: {c}")
@@ -380,10 +381,15 @@ def main():
 
     # Step 6: 动态组装 UI DAG — launcher from AndroidManifest MAIN/LAUNCHER
     print("\n[6/7] Assembling UI DAG...")
-    from extractors.ui_dag_assembler import assemble, assemble_all_flat_paths, assemble_flat_paths
+    from extractors.ui_dag_assembler import assemble, assemble_all_flat_paths, assemble_flat_paths, set_output_dir
     from extractors.app_model_builder import build_and_write
     from extractors.app_model_schema import path_display_report_from_segments
     from extractors.ui_paths_nav_enumerator import enumerate_nav_paths
+
+    # The assembler reads its inputs (nav/ground_truth/static_xml) from disk; point it
+    # at the real out_dir so a non-default --out (e.g. the pipeline's
+    # intermediate/0_android_facts) is read instead of the stale default output dir.
+    set_output_dir(out_dir)
 
     launcher_class = navigation_extractor.get_launcher_activity_class(project_root)
     launcher_layout = ""

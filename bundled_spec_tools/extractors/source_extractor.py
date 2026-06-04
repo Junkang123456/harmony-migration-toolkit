@@ -181,6 +181,24 @@ _LISTENER_RE = re.compile(
     re.MULTILINE,
 )
 
+# 链式 findViewById：R.id.xxx).setOnXxxListener(
+_FIND_VIEW_LISTENER_RE = re.compile(
+    r'R\.id\.(\w+)\s*\)'
+    r'\s*[\.\?]+'
+    r'((?:set|add|do)On\w+|'
+    r'\w+(?:Listener|Callback|Observer|Watcher|Handler)|'
+    r'do(?:After|Before|On)\w+|'
+    r'set\w+(?:Listener|Callback|Action|Changed|Click|Dismissed|Selected))'
+    r'\s*[({]',
+    re.MULTILINE,
+)
+
+# 局部变量赋值：val/var xxx = yyy.findViewById(R.id.zzz)
+_FIND_VIEW_ASSIGN_RE = re.compile(
+    r'(\w+)\s*=\s*[\w.()]*\.?findViewById\s*\(\s*R\.id\.(\w+)\s*\)',
+    re.MULTILINE,
+)
+
 # 非 View 的系统/基础设施对象 — 它们的事件注册对 UI 路径没有贡献
 _NON_VIEW_RECEIVERS = {
     "decorView", "window", "contentResolver", "loaderManager",
@@ -203,44 +221,141 @@ def _is_non_view_ref(view_ref: str) -> bool:
     return False
 
 
+def _infer_event_type(method: str) -> str:
+    method_lower = method.lower()
+    if "click"   in method_lower: return "click"
+    if "check"  in method_lower or "change" in method_lower: return "value_change"
+    if "text"   in method_lower: return "text_change"
+    if "scroll" in method_lower: return "scroll"
+    if "drag"   in method_lower or "touch" in method_lower: return "touch"
+    if "select" in method_lower: return "select"
+    if "dismiss" in method_lower or "close" in method_lower: return "dismiss"
+    if "refresh" in method_lower: return "refresh"
+    if "editor" in method_lower or "action" in method_lower: return "editor_action"
+    if "page"   in method_lower: return "page_change"
+    if "long"   in method_lower: return "long_click"
+    return "interaction"
+
+
+_CALLBACK_VAR_RE = re.compile(r'\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\)')
+_METHOD_REF_RE = re.compile(r'::(\w+)\b')
+_ANON_LISTENER_HINT_RE = re.compile(r'\s*(?:object\s*:|new\s+[A-Za-z_]\w*(?:[.$][A-Za-z_]\w*)*(?:<[^>]+>)?\s*\()')
+
+
+def _make_registration_snippet(source: str, start: int, end: int, limit: int = 180) -> str:
+    snippet = source[start:min(len(source), end + limit)]
+    return re.sub(r'\s+', ' ', snippet).strip()
+
+
+
+def _detect_callback_metadata(source: str, start: int, end: int) -> tuple[str, str, str]:
+    opener = source[end - 1:end] if end > start else ""
+    tail = source[end:min(len(source), end + 240)]
+    snippet = _make_registration_snippet(source, start, end)
+
+    if opener == "{":
+        return "lambda", "", snippet
+
+    if opener == "(":
+        m = _METHOD_REF_RE.search(tail)
+        if m:
+            return "method_ref", m.group(1), snippet
+        if _ANON_LISTENER_HINT_RE.match(tail):
+            return "anonymous_listener", "", snippet
+        if "->" in tail[:160]:
+            return "lambda", "", snippet
+        m = _CALLBACK_VAR_RE.match(tail)
+        if m:
+            ref = m.group(1)
+            if "." not in ref:
+                return "callback_var", ref, snippet
+
+    return "unknown", "", snippet
+
+
+
 def extract_event_registrations(source: str, file_path: str) -> list[dict]:
     results = []
     lines   = source.splitlines()
+    seen_positions: set[int] = set()
 
+    # ── 局部变量 → R.id 映射（Step 2）──
+    var_to_id: dict[str, str] = {}
+    for m in _FIND_VIEW_ASSIGN_RE.finditer(source):
+        var_to_id[m.group(1)] = m.group(2)
+
+    # ── Pattern 1: 现有 binding.xxx / someVar 模式 ──
     for m in _LISTENER_RE.finditer(source):
         view_ref  = m.group(1) or m.group(2) or ""
         method    = m.group(3)
 
-        # 过滤非 View 接收者，避免系统回调误报
         if _is_non_view_ref(view_ref):
             continue
+        if method.startswith("remove"):
+            continue
+        rest_after = source[m.end():m.end() + 20].lstrip()
+        if rest_after.startswith("null"):
+            continue
 
+        # 变量追踪：如果 view_ref 在 var_to_id 中，替换为 XML id
+        if view_ref in var_to_id:
+            view_ref = var_to_id[view_ref]
+
+        is_pending_intent = "PendingIntent" in method
         line_idx  = _line_of(source, m.start())
         enclosing = _enclosing_fn(lines, line_idx - 1)
+        callback_kind, callback_ref, registration_snippet = _detect_callback_metadata(
+            source, m.start(), m.end()
+        )
 
-        # 粗略推断事件类型（不依赖枚举，用方法名语义）
-        method_lower = method.lower()
-        if "click"   in method_lower: event = "click"
-        elif "check"  in method_lower or "change" in method_lower: event = "value_change"
-        elif "text"   in method_lower: event = "text_change"
-        elif "scroll" in method_lower: event = "scroll"
-        elif "drag"   in method_lower or "touch" in method_lower: event = "touch"
-        elif "select" in method_lower: event = "select"
-        elif "dismiss" in method_lower or "close" in method_lower: event = "dismiss"
-        elif "refresh" in method_lower: event = "refresh"
-        elif "editor" in method_lower or "action" in method_lower: event = "editor_action"
-        elif "page"   in method_lower: event = "page_change"
-        elif "long"   in method_lower: event = "long_click"
-        else: event = "interaction"
-
-        results.append({
+        entry = {
             "kind":        "event_registration",
             "file":        file_path,
             "line":        line_idx,
             "view_ref":    view_ref,
             "method":      method,
-            "event_type":  event,
+            "event_type":  _infer_event_type(method),
             "enclosing_fn": enclosing,
+            "callback_kind": callback_kind,
+            "callback_ref": callback_ref,
+            "registration_snippet": registration_snippet,
+        }
+        if is_pending_intent:
+            entry["event_type"] = "pending_intent"
+            entry["is_pending_intent"] = True
+        results.append(entry)
+        seen_positions.add(m.start())
+
+    # ── Pattern 2: findViewById(R.id.xxx).setOnXxxListener( ──
+    for m in _FIND_VIEW_LISTENER_RE.finditer(source):
+        if m.start() in seen_positions:
+            continue
+        xml_id = m.group(1)
+        method = m.group(2)
+
+        if method.startswith("remove"):
+            continue
+        rest_after = source[m.end():m.end() + 20].lstrip()
+        if rest_after.startswith("null"):
+            continue
+
+        line_idx  = _line_of(source, m.start())
+        enclosing = _enclosing_fn(lines, line_idx - 1)
+        callback_kind, callback_ref, registration_snippet = _detect_callback_metadata(
+            source, m.start(), m.end()
+        )
+
+        results.append({
+            "kind":        "event_registration",
+            "file":        file_path,
+            "line":        line_idx,
+            "view_ref":    xml_id,
+            "method":      method,
+            "event_type":  _infer_event_type(method),
+            "enclosing_fn": enclosing,
+            "callback_kind": callback_kind,
+            "callback_ref": callback_ref,
+            "registration_snippet": registration_snippet,
         })
 
     return results
@@ -645,14 +760,10 @@ def _ast_postprocess(findings: dict, project_root: str,
         if not lang:
             continue
 
-        try:
-            parser = ast_index.get_parser(lang)
-            source = actual_path.read_bytes()
-            tree = parser.parse(source.decode("utf-8"))
-        except Exception:
+        parsed = ast_index.parse_file(actual_path)
+        if parsed is None:
             continue
-
-        root_node = tree.root_node()
+        source, root_node = parsed
         lines = source.decode("utf-8", errors="ignore").splitlines()
 
         # --- receiver type annotation ---

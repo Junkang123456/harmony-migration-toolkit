@@ -22,6 +22,11 @@ try:
 except Exception:
     _get_parser = None
 
+try:
+    from extractors.ast_index import parse_file as _ast_parse_file
+except Exception:
+    _ast_parse_file = None
+
 # ── Shared constants ──────────────────────────────────────────────────────────
 
 _INIT_METHOD_NAMES = {
@@ -289,11 +294,20 @@ def _find_addview_calls(source: bytes, body_node, body_text: str,
 def _find_adapter_assignments(source: bytes, body_node, body_text: str,
                               class_name: str, rel_path: str,
                               adapter_usages: dict) -> None:
-    """Find adapter = XxxAdapter() or setAdapter(XxxAdapter()) assignments."""
-    adapter_re = re.compile(r'(\w+)\s*\.\s*(?:adapter\s*=\s*|setAdapter\s*\(\s*)(\w+Adapter)\s*[\(.]')
+    """Find adapter = XxxAdapter() or setAdapter(adapter) assignments."""
+    adapter_re = re.compile(r'(\w+)\s*\.\s*(?:adapter\s*=\s*|setAdapter\s*\(\s*)(\w+)\s*[\(.\)]')
     for m in adapter_re.finditer(body_text):
         host_var = m.group(1)
-        adapter_class = m.group(2)
+        adapter_ref = m.group(2)
+        # Resolve variable name to actual adapter class name
+        adapter_class = adapter_ref
+        if not adapter_ref.endswith("Adapter"):
+            resolve_re = re.compile(
+                rf'(?:val|var|final|\w+\s+)?{re.escape(adapter_ref)}\s*=\s*new\s+(\w+Adapter)\s*\(',
+            )
+            resolve_m = resolve_re.search(body_text)
+            if resolve_m:
+                adapter_class = resolve_m.group(1)
         # Try to resolve host variable's view id
         host_id = ""
         fvbi = re.search(
@@ -342,7 +356,7 @@ def _find_adapter_inflates(source: bytes, class_node, class_name: str,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _INIT_METHOD_RE = re.compile(
-    r'(?:fun|override\s+fun|void|private\s+fun|public\s+void)\s+'
+    r'(?:fun\s+|\b\w+(?:\s+\w+)*\s+)'
     r'(' + '|'.join(_INIT_METHOD_NAMES) + r')\s*\(',
     re.MULTILINE,
 )
@@ -362,7 +376,7 @@ _INFLATE_VAR_RE = re.compile(
 )
 
 _SET_ADAPTER_RE = re.compile(
-    r'(\w+)\s*\.\s*(?:adapter\s*=\s*|setAdapter\s*\(\s*)(\w+Adapter)\s*[\(.]',
+    r'(\w+)\s*\.\s*(?:adapter\s*=\s*|setAdapter\s*\(\s*)(\w+)\s*[\(.\)]',
     re.MULTILINE,
 )
 
@@ -470,7 +484,16 @@ def _scan_file_regex(content: str, rel_path: str,
 
         for m in _SET_ADAPTER_RE.finditer(body):
             host_var = m.group(1)
-            adapter_class = m.group(2)
+            adapter_ref = m.group(2)
+            # Resolve variable name to actual adapter class name
+            adapter_class = adapter_ref
+            if not adapter_ref.endswith("Adapter"):
+                resolve_re = re.compile(
+                    rf'(?:val|var|final|\w+\s+)?{re.escape(adapter_ref)}\s*=\s*new\s+(\w+Adapter)\s*\(',
+                )
+                resolve_m = resolve_re.search(body)
+                if resolve_m:
+                    adapter_class = resolve_m.group(1)
             host_id = _find_view_id_for_variable(body, host_var)
             line = _line_number(content, body_offset + m.start())
             adapter_usages[adapter_class] = {
@@ -549,23 +572,106 @@ def run(project_root: str, dep_roots: list[str] | None = None,
 
             # Try AST path first
             used_ast = False
-            if _get_parser is not None:
+            if _ast_parse_file is not None:
                 lang = _language_for(fpath)
                 if lang:
-                    try:
-                        parser = _get_parser(lang)
-                        source = fpath.read_bytes()
-                        tree = parser.parse(source.decode("utf-8"))
-                        _scan_file_ast(source, tree.root_node(), lang, rel,
-                                       dynamic_elements, adapter_usages, adapter_layouts)
-                        used_ast = True
-                        ast_used = True
-                    except Exception:
-                        pass
+                    parsed = _ast_parse_file(fpath)
+                    if parsed is not None:
+                        source, root_node = parsed
+                        try:
+                            _scan_file_ast(source, root_node, lang, rel,
+                                           dynamic_elements, adapter_usages, adapter_layouts)
+                            used_ast = True
+                            ast_used = True
+                        except Exception:
+                            pass
 
             if not used_ast:
                 _scan_file_regex(content, rel, dynamic_elements,
                                  adapter_usages, adapter_layouts)
+
+    # Backfill host info for adapter_layouts: the adapter class file may have
+    # been scanned before its host Activity/Fragment file, leaving host fields
+    # empty. Run a second pass to cross-reference with full adapter_usages.
+    for al in adapter_layouts:
+        ac = al.get("adapter_class", "")
+        if ac and not al.get("host_class"):
+            usage = adapter_usages.get(ac, {})
+            if usage.get("host_class"):
+                al["host_class"] = usage["host_class"]
+                al["host_variable"] = usage.get("host_variable", "")
+                al["host_id"] = usage.get("host_id", "")
+
+    # Third pass: aggressively scan for adapter assignments in all source
+    # files, not limited to init methods. This catches setAdapter calls in
+    # constructor bodies, helper methods, and files where AST parsing failed.
+    _AGGRESSIVE_SET_ADAPTER_RE = re.compile(
+        r'(\w+)\s*\.\s*(?:adapter\s*=\s*|setAdapter\s*\(\s*)(\w+)\s*[\)]',
+        re.MULTILINE,
+    )
+    _AGGRESSIVE_CLASS_RE = re.compile(
+        r'setAdapter\s*\(\s*(\w+(?:Adapter|adapter))',
+        re.MULTILINE,
+    )
+    _CLASS_DECL_RE = re.compile(
+        r'class\s+(\w+)',
+    )
+
+    for root_path, prefix in roots:
+        for fpath in android_project.source_files(root_path):
+            try:
+                content = fpath.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            rel = android_project.relative_to_root(fpath, root_path, prefix)
+
+            # Find the enclosing class name
+            class_match = _CLASS_DECL_RE.search(content)
+            host_class = class_match.group(1) if class_match else ""
+
+            for m in _AGGRESSIVE_SET_ADAPTER_RE.finditer(content):
+                adapter_ref = m.group(2)
+                adapter_class = adapter_ref
+                line_num = content[:m.start()].count("\n") + 1
+
+                # Variable resolution
+                if not adapter_ref.endswith("Adapter"):
+                    resolve_re = re.compile(
+                        rf'(?:val|var|final|\w+\s+)?{re.escape(adapter_ref)}\s*=\s*new\s+(\w+Adapter)\s*\(',
+                    )
+                    resolve_m = resolve_re.search(content)
+                    if resolve_m:
+                        adapter_class = resolve_m.group(1)
+
+                # Only store if this adapter_class is in our adapter_layouts
+                # and doesn't already have a host
+                target_al = None
+                for al in adapter_layouts:
+                    if al["adapter_class"] == adapter_class and not al.get("host_class"):
+                        target_al = al
+                        break
+
+                if target_al:
+                    host_id = ""
+                    fvbi = re.search(
+                        rf'(?:val|var|final)\s+{re.escape(m.group(1))}\s*=.*?findViewById\w*\(\s*R\.id\.(\w+)',
+                        content,
+                    )
+                    if fvbi:
+                        host_id = fvbi.group(1)
+
+                    if not target_al.get("host_class"):
+                        target_al["host_class"] = host_class
+                        target_al["host_variable"] = m.group(1)
+                        target_al["host_id"] = host_id
+
+                    adapter_usages[adapter_class] = {
+                        "host_class": host_class,
+                        "host_variable": m.group(1),
+                        "host_id": host_id,
+                        "file": rel,
+                        "line": line_num,
+                    }
 
     by_method: dict[str, int] = {}
     for elem in dynamic_elements:
