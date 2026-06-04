@@ -135,7 +135,7 @@ bundle **不嵌入**全量 `nodes`/`edges`；全图请读 `outline.artifacts.fea
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `edge_id` | string | 可选；或由 `from+to+rel+序号` 确定性生成 |
+| `edge_id` | string | 可选；紧凑位置序号 `e{序号}`（`from`/`to`/`rel` 已是独立字段，不再重复嵌入，避免在 ~7k calls 边上重复长 symbol-id 端点） |
 | `from` / `to` | string | `node_id` |
 | `rel` | string | 见 4.2 |
 | `determinism` | `rule` \| `static_analysis` | |
@@ -187,6 +187,8 @@ bundle **不嵌入**全量 `nodes`/`edges`；全图请读 `outline.artifacts.fea
 | `implements` | screen→`implementation` |
 | `evidence_in_file` | `function_symbol`→`implementation` |
 | `calls` | `function_symbol`→`function_symbol`（**`call_graph.json`**） |
+
+> 体积说明：`function_symbol` 节点与 `calls` 边占 feature_tree 约 3/4。在不改变"完整规范图"形态(节点/边全保留)的前提下去除冗余字段——`function_symbol` 节点 `evidence` 不再重复顶层的 `function_name`/`signature`;`calls` 边省去恒为 `call_graph.json` 的 `source`(`determinism` 为 schema 必填,保留);`edge_id` 改为紧凑 `e{序号}`。AntennaPod feature_tree.v1.json 10.75MB→8.50MB(-21%)。如需更深裁剪可另议拆出调用子图 sidecar。
 
 ### 4.3 细化：经 `behavior` 或 `ui_control`
 

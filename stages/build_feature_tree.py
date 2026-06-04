@@ -230,7 +230,10 @@ def _function_coverage(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
 
 
 def _stable_edge_id(from_id: str, to_id: str, rel: str, idx: int) -> str:
-    return f"e:{from_id}:{to_id}:{rel}:{idx}"
+    # Positional id, unique within the file. from/to/rel are already first-class
+    # edge fields, so embedding them here only duplicated long symbol-id endpoints
+    # (worst on the ~7k calls edges). idx already disambiguates; keep it compact.
+    return f"e{idx}"
 
 
 def build_feature_tree(
@@ -461,13 +464,14 @@ def build_feature_tree(
                 "function_name": str(sym.get("function_name") or ""),
                 "signature": str(sym.get("signature") or ""),
                 "evidence": {
+                    # function_name/signature live at node top level above — not
+                    # repeated here. evidence keeps only what the node fields don't
+                    # carry (location + provenance) to avoid ~4k×2 duplicate strings.
                     "source": "function_symbols.json",
                     "file": _norm_path(sym.get("file")),
                     "start_line": _safe_int(sym.get("start_line")),
                     "end_line": _safe_int(sym.get("end_line")),
                     "class_name": sym.get("class_name") or "",
-                    "function_name": sym.get("function_name") or "",
-                    "signature": sym.get("signature") or "",
                     "confidence": sym.get("confidence") or "",
                 },
             }
@@ -486,7 +490,6 @@ def build_feature_tree(
                 "to": dst_id,
                 "rel": "calls",
                 "determinism": "static_analysis",
-                "source": "call_graph.json",
                 "callsite_file": _norm_path(call.get("callsite_file")),
                 "callsite_line": _safe_int(call.get("callsite_line")),
                 "callee_name": call.get("callee_name") or "",
