@@ -148,10 +148,14 @@ def run_stage0(
         if scan_tmp.exists():
             shutil.rmtree(scan_tmp)
         cmd = [sys.executable, str(spec_main), str(android_root), "--out", str(scan_tmp)]
-        subprocess.run(cmd, cwd=str(spec_tools), check=True)
-        _copy_from_spec_output(scan_tmp, facts_dir)
-        if scan_tmp.exists():
-            shutil.rmtree(scan_tmp)
+        try:
+            subprocess.run(cmd, cwd=str(spec_tools), check=True)
+            _copy_from_spec_output(scan_tmp, facts_dir)
+        finally:
+            # Transient scan dir: mirrored into facts_dir above, so drop it even if
+            # the scan or copy failed — it must never linger as a stray artifact.
+            if scan_tmp.exists():
+                shutil.rmtree(scan_tmp)
     else:
         if not spec_output.is_dir():
             raise FileNotFoundError(
