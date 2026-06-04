@@ -147,6 +147,15 @@ def mine_generated_taxonomy(
         enriched = dict(meta)
         enriched.setdefault("class_name", screen)
         tokens = _domain_tokens(enriched)
+        if not tokens:
+            # Deterministic last resort: a name whose every word is structural noise
+            # (e.g. MainActivity → main/activity) would otherwise be stranded as
+            # unmatched once location tokens are dropped. Cluster it by its own
+            # class/layout words instead — still developer-chosen names, never the
+            # package/path noise we deliberately excluded.
+            tokens = _split_words(str(enriched.get("class_name") or "")) + _split_words(
+                str(enriched.get("layout") or "")
+            )
         primary = _primary_token(tokens)
         if not primary:
             continue
