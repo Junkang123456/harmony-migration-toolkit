@@ -617,3 +617,4 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 | 2026-06-03 | 文档重写：补充覆盖率边界与未能分析项的根因分析（§8） |
 | 2026-06-03 | 非 UI 组件归类 non_ui_components.py（§5.15）：orphan 行为按 service/widget/receiver/listener 聚合 + 鸿蒙能力提示；manifest/字节码/类名三级确定性判定；UI 类（adapter/Fragment）排除。新增 `non_ui_components.json` |
 | 2026-06-04 | 非 UI 组件揭示双向联系（§5.15）：经 `call_graph` 精确类名匹配补 `used_by`（调用者类 + 是否屏幕）；`inject_screen_backrefs()` 以 spec 的 `class` 字段为权威键把组件反链写入屏幕 spec 的 `non_ui_dependencies`；匹配不上不模糊猜测 |
+| 2026-06-04 | 入口脚本强制 UTF-8 stdout/stderr：进度打印含 → / ↔ 等字符,stdout 被管道/重定向捕获时在非 UTF-8 locale(Windows cp936)会 UnicodeEncodeError 整体崩溃,现 `reconfigure(encoding="utf-8")` 兜底 |

@@ -12,6 +12,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Progress is printed with arrows (→, ↔) and Chinese-derived text. When stdout is a
+# pipe or redirect (subprocess capture, CI, log file) Python encodes it with the
+# locale codec — cp936 on a Chinese Windows — which cannot represent those glyphs and
+# crashes the whole scan with UnicodeEncodeError. Force UTF-8 on the streams instead.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
 from extractors import function_graph_extractor, ground_truth_builder, navigation_extractor, source_extractor, xml_extractor, fragment_detector, dynamic_ui_extractor, behavior_chain_extractor
 from extractors.dependency_resolver import resolve_dependencies
 from generate_specs import generate_all_specs

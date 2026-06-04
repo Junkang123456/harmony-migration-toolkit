@@ -19,6 +19,15 @@ from jsonschema import validators
 # Allow `python pipeline.py` from toolkit root without installing as package
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Force UTF-8 on stdout/stderr so progress prints (arrows, Chinese text) survive a
+# piped/redirected stream on a non-UTF-8 locale (e.g. Windows cp936) instead of
+# crashing with UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # Support TREE_SITTER_CACHE_DIR env var for offline machines (parser DLLs)
 _cache_dir = __import__("os").environ.get("TREE_SITTER_CACHE_DIR")
 if _cache_dir:
