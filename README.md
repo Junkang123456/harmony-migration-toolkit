@@ -52,6 +52,8 @@ python pipeline.py --android-root /path/to/android/project --out /path/to/output
 | 6 | Optional debug `<output>/viewer/` — static feature tree viewer and sidecar JSON |
 | 7 | `<output>/agent_bundle.v1.json` — final agent-consumable migration bundle |
 
+For a directory-level index of every file each stage writes, see [docs/PIPELINE_OUTPUTS.md](docs/PIPELINE_OUTPUTS.md).
+
 The default output directory is `<android-root>/harmony_migration_out`. The default stage order is `0,1,2,3,5,4,7`: feature tree generation runs before scaffold emission and final bundle export. The root output is intentionally small: `agent_bundle.v1.json` is the deliverable, while deterministic debugging artifacts live under `intermediate/`.
 
 ### Advanced / Debug

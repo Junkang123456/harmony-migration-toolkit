@@ -250,6 +250,13 @@ def main() -> int:
         )
         _validate_file(agent_bundle_path, "agent_bundle.v1.schema.json")
 
+    # Ship the directory-level product index with the output, so an agent that
+    # only sees <output>/ (not the toolkit source tree) can still orient itself.
+    index_src = toolkit_root() / "docs" / "PIPELINE_OUTPUTS.md"
+    if index_src.is_file():
+        (out_dir / "PIPELINE_OUTPUTS.md").write_text(
+            index_src.read_text(encoding="utf-8"), encoding="utf-8")
+
     print("Pipeline completed.", file=sys.stderr)
     return 0
 
