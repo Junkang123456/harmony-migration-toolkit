@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -169,20 +170,7 @@ def parse_manifest_launcher(android_root: Path) -> tuple[str, str, str]:
     text = path.read_text(encoding="utf-8", errors="ignore")
     pkg_m = re.search(r"""package\s*=\s*["']([^"']+)["']""", text)
     package = (pkg_m.group(1) if pkg_m else "").strip() or gradle_ns
-    # MAIN/LAUNCHER activity
-    act_m = re.search(
-        r"""<activity[^>]+android:name\s*=\s*["']([^"']+)["'][^>]*>[\s\S]*?"""
-        r"""<action\s+android:name\s*=\s*["']android.intent.action.MAIN["']""",
-        text,
-        re.IGNORECASE,
-    )
-    if not act_m:
-        act_m = re.search(
-            r"""<activity[^>]+android:name\s*=\s*["']([^"']+)["']""",
-            text,
-            re.IGNORECASE,
-        )
-    short = act_m.group(1) if act_m else ""
+    short = _launcher_activity_name(path, text)
     if short.startswith("."):
         short = short[1:]
         qualified = f"{package}.{short}" if package else short
@@ -191,3 +179,44 @@ def parse_manifest_launcher(android_root: Path) -> tuple[str, str, str]:
     else:
         qualified = f"{package}.{short}" if package else short
     return package, short, qualified
+
+
+_ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+
+
+def _intent_filter_is_launcher(elem: ET.Element) -> bool:
+    for intent_filter in elem.iter("intent-filter"):
+        actions = {a.get(f"{_ANDROID_NS}name", "") for a in intent_filter.iter("action")}
+        categories = {c.get(f"{_ANDROID_NS}name", "") for c in intent_filter.iter("category")}
+        if "android.intent.action.MAIN" in actions and "android.intent.category.LAUNCHER" in categories:
+            return True
+    return False
+
+
+def _launcher_activity_name(path: Path, text: str) -> str:
+    """Short/relative class name of the MAIN+LAUNCHER entry point.
+
+    Parsed with ElementTree so the launcher is the activity whose own
+    intent-filter declares both action.MAIN and category.LAUNCHER — not, as a
+    cross-element regex would yield, the first ``<activity>`` in the document
+    that happens to be followed somewhere by a MAIN action. ``activity-alias``
+    is resolved to its ``targetActivity``. Falls back to the first activity only
+    when no launcher entry exists (e.g. a library module manifest).
+    """
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        # Malformed XML — fall back to a name-only regex (no MAIN/LAUNCHER claim).
+        m = re.search(r"""<activity[^>]+android:name\s*=\s*["']([^"']+)["']""", text, re.IGNORECASE)
+        return m.group(1) if m else ""
+    first_activity = ""
+    for tag in ("activity", "activity-alias"):
+        for elem in root.iter(tag):
+            name = elem.get(f"{_ANDROID_NS}name", "")
+            if not first_activity and tag == "activity" and name:
+                first_activity = name
+            if _intent_filter_is_launcher(elem):
+                if tag == "activity-alias":
+                    return elem.get(f"{_ANDROID_NS}targetActivity", "") or name
+                return name
+    return first_activity
