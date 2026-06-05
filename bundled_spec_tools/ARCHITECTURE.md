@@ -78,6 +78,8 @@ function_graph ────┼─→ inflate_owner_map ────┤   (join i
                    │                         │
                    └─→ behavior_chain_extractor ─┘
                                              │
+                      containment_linker (fragment_detector × static_xml → 容器边并入 nav)
+                                             │
                                   ui_dag_assembler ─→ ui_paths
                                              │
                                   app_model_builder ─→ app_model/
@@ -217,6 +219,20 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 
 覆盖率（AntennaPod）：84 个声明 Fragment 中 79 个找到宿主（94%）。
 覆盖率（WordPress）：声明 187，抽象基类 13，需宿主 174，已挂载 149（86%）；剩余 25 个 orphan 为两段式 `f = X.newInstance(); f.show()` 弹窗与自定义 helper（跨语句变量/跨过程，超出单文件正则+数据流范围）。
+
+### 5.8b 容器边链接 — `extractors/containment_linker.py`
+
+**作用**：把 Fragment / 底部导航的"宿主→区块"挂载关系作为**容器边**并入导航图，让"从启动页可达"的 DAG 不再只跟随 Activity `startActivity` 跳转。
+
+**背景**：导航图只建模 startActivity 发现的屏幕跳转。主导航靠 Fragment / 底部导航的 App（宿主用 Fragment 替换切 tab、从不调 startActivity），其枢纽 Activity 几乎没有出边，BFS 走到枢纽即断（WordPress 从启动页只可达 5 屏）。被托管的屏幕全都提取到了（在 fragments.json / app_model 里），只是没**连**到宿主。
+
+两条确定性容器边，每条都有具体源码/布局依据，绝不推断：
+- **(a) host → fragment**（来自 fragments.json）：host 类经**内部类→最外层类**解析，使适配器/内部 helper（如 `NavAdapter`）归到真正声明它的屏幕/View（`WPMainNavigationView`）。
+- **(b) screen → custom-view**：当一个**托管了 Fragment 的自定义 View** 作为标签出现在某屏幕的布局里（取自 static_xml 的 `tag@layout`），加 屏幕→该 View 边，桥接 `Activity → 自定义底部导航 View → 其 tab`。仅链接确实托管 Fragment 的自定义 View，无关 View 不会变成伪屏幕节点。
+
+边 schema 与导航边一致（`from/to/to_layout/type/via/trigger/line`），`via=fragment_host`/`custom_view_host` 以区分容器与真实导航。在 [8/9] 调 `assemble` 前由 `merge_into_nav` 并入并重写 `navigation_graph.json`（assemble 从盘读 nav）。
+
+覆盖率（WordPress）：从启动页可达屏幕 **5 → 24**（+86 host→区块、+2 屏幕→自定义View）。剩余 24/410 的天花板是导航图本身稀疏（147 个节点零入边、109 个 `unresolved_start_activity` 目标为局部 `intent` 变量未解析），需 Intent 过程内数据流，属另一边界。
 
 ### 5.9 动态 UI 检测 — `extractors/dynamic_ui_extractor.py`
 
@@ -634,3 +650,4 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 | 2026-06-04 | 调查 `ui_effect_paths.json` 在 AntennaPod 为 0(`nav_pipeline.build_ui_effect_paths`)：结论为**合法边界,非 bug**。该子系统是 report-only 补充,只匹配代码/Compose 菜单 DSL(`_UI_ITEM_CALL` = `\w*Item(R.string.xxx)`)与 settings DSL;AntennaPod 用 XML 菜单(`res/menu/*.xml`)+`onOptionsItemSelected` switch,不用该 idiom,故 `collect_ui_action_bindings` 仅匹到 2 条(含 1 误报),且都 resolve 为 `unknown` 被过滤 → 0 条。真实菜单/导航信号已由 navigation_extractor + behavior_chains + static_xml 覆盖,无损失。不放宽正则强行出路径(那将编造 effect,违反 §2/§8)。未改代码 |
 | 2026-06-05 | Fragment 宿主覆盖三项确定性修复(`fragment_detector.py`)：(a)XML 扫描原只认 `<fragment>` 标签,漏 `FragmentContainerView android:name=` 静态挂载(等价于 `<fragment>`);补识别,排除 `NavHostFragment`(导航容器非屏幕),attach_method=`xml_fragment_container`。(b)orphan 误把抽象基类计入:作为另一 Fragment 父类、自身未直接挂载者(如 `EditorFragmentAbstract`、`ViewPagerFragment`、`SiteCreationBaseFormFragment`)经子类挂载、不需自有宿主,从分母剔除,新增 `coverage.base_class_count`/`needs_host_count`,覆盖率改为 `attached/needs_host`。(c)`_scan_fragment_instantiations` 增 `when` 箭头工厂模式 `-> XFragment(` / `-> X.newInstance(`(`val f = when(step){...}` 工厂,旧 scan 只认 return/赋值)。WordPress orphan 59→25,声明 187/抽象基类 13/需宿主 174/已挂载 149(74%→86%);剩余 25 为两段式 `f=X.newInstance();f.show()` 弹窗与自定义 helper(跨语句/跨过程,真实边界)。main.py [4b] 措辞同步改正:旧"找到所在屏幕"口径错(实为已挂载),改"已挂载到界面的区块 attached/needs_host"并显示抽象基类计数 |
 | 2026-06-05 | 终端步骤重编号(`main.py`)：导航图、Fragment、动态 UI、行为链是各自独立的事实提取器,旧编号把后三者塞为 `[4b/4c/4d]`、分母 `/7` 也对不上,易误读成"导航图的子步骤"。拍平为连续顶层 `[1/9]…[9/9]`(XML/源码/基准事实/导航图/区块/动态UI/行为链/UI DAG/说明书),gap 改 `[可选]` 不占号、交叉验证 `[V]` 同。纯打印标签,无逻辑变更 |
+| 2026-06-05 | 容器边链接(`containment_linker.py`,§5.8b)：导航图只建 Activity startActivity 边,主导航靠 Fragment/底部导航的 App 其枢纽 Activity 几乎无出边,从启动页 BFS 走到枢纽即断(WordPress 可达 5/410)。新增两条确定性容器边并入 nav 图:(a)`host→fragment`(fragments.json),host 经内部类→最外层类解析(`NavAdapter`→`WPMainNavigationView`);(b)`screen→custom-view`,当托管 Fragment 的自定义 View 作为 tag 出现在屏幕布局里(static_xml `tag@layout`),桥接 `Activity→自定义底部导航View→tab`,仅链接真正托管 Fragment 的 View。在 [8/9] 调 assemble 前 `merge_into_nav` 并入并重写 navigation_graph.json。WordPress 可达屏幕 5→24(+86 host→区块、+2 屏幕→自定义View);剩余天花板是导航图稀疏(147 节点零入边、109 `unresolved_start_activity` 为局部 intent 变量未解析,需 Intent 数据流,属另一边界)。每条边都有源码/布局依据,绝不推断 |

@@ -447,6 +447,20 @@ def main():
                 break
     print(f"  根屏幕-启动页(launcher)：{launcher_class}（布局 {launcher_layout}）")
 
+    # Link Fragment / bottom-nav hosting into the nav graph so the reachable-screen
+    # DAG follows host→fragment and screen→custom-view-host containment, not only
+    # Activity startActivity jumps. Done here (after fragments + static_xml are
+    # available) and re-persisted so `assemble`, which reads nav from disk, sees it.
+    from extractors import containment_linker
+    _cl_stats = containment_linker.merge_into_nav(
+        nav, frag_result.get("fragments", []), xml_result,
+        project_root, dep_roots=dep_roots,
+    )
+    if _cl_stats["added"]:
+        nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  容器边补充(宿主→区块 / 屏幕→自定义View)：+{_cl_stats['added']} 条"
+              f"（{_cl_stats['by_via']}）")
+
     dag = assemble(launcher_layout, max_depth=8)
     (out_dir / "ui_dag.json").write_text(
         json.dumps(dag, indent=2, ensure_ascii=False), encoding="utf-8"
