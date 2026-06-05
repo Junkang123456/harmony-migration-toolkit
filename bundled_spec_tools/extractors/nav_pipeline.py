@@ -188,6 +188,30 @@ _ASSIGN_INTENT_TARGET = re.compile(
     re.MULTILINE,
 )
 
+
+def _resolve_local_intent_target(var: str, window: str) -> str | None:
+    """Intra-procedural backward resolution of a `startActivity(var)` target.
+
+    `window` is the source preceding the call (a back-window that stands in for
+    the enclosing method). Returns the Activity class named in the nearest
+    assignment that ties `var` to an explicit class literal, matching both
+    Kotlin `Intent(ctx, X::class.java)` and Java `new Intent(ctx, X.class)`,
+    with or without a `val`/`var`/type declaration — so reassignments such as
+    `intent = new Intent(this, X.class)` resolve too.
+
+    Returns None when no explicit class literal is found. Implicit intents
+    (`ACTION_VIEW`/url/browser), factory-built intents (`X.createIntent(...)`),
+    and pass-through `getIntent()` therefore stay unresolved on purpose — they
+    have no in-app target class to link, so nothing is inferred.
+    """
+    pat = re.compile(
+        rf"\b{re.escape(var)}\s*=\s*(?:new\s+)?Intent\s*\(\s*[^,]*,\s*(\w+)"
+        rf"(?:::class\.java|\.class)\b",
+        re.MULTILINE,
+    )
+    matches = list(pat.finditer(window))
+    return matches[-1].group(1) if matches else None
+
 _PRINT_SERVICE = re.compile(
     r"(?:getSystemService\s*\(\s*Context\.PRINT_SERVICE|PrintManager\b)",
     re.MULTILINE,
@@ -1624,13 +1648,8 @@ def collect_navigation_candidates(
                 continue
             line = source[: m.start()].count("\n") + 1
             window = source[max(0, m.start() - 4000) : m.start()]
-            assign_pat = re.compile(
-                rf"(?:val|var)\s+{re.escape(var)}\s*=\s*Intent\s*\(\s*[^,]*,\s*(\w+)::class\.java",
-                re.MULTILINE,
-            )
-            matches = list(assign_pat.finditer(window))
-            if matches:
-                target = matches[-1].group(1)
+            target = _resolve_local_intent_target(var, window)
+            if target:
                 candidates.append(
                     {
                         "id": _candidate_id("local_intent_var", rel, line, var + target),
@@ -1640,7 +1659,7 @@ def collect_navigation_candidates(
                         "to_class": target,
                         "file": rel.replace("\\", "/"),
                         "line": line,
-                        "evidence": f"startActivity({var}) with Intent(..., {target}::class.java)",
+                        "evidence": f"startActivity({var}) with Intent(..., {target})",
                     }
                 )
             else:
@@ -1760,14 +1779,9 @@ def extract_l2_variable_intent_edges(
             continue
         line = source[: m.start()].count("\n") + 1
         window = source[max(0, m.start() - 4000) : m.start()]
-        assign_pat = re.compile(
-            rf"(?:val|var)\s+{re.escape(var)}\s*=\s*Intent\s*\(\s*[^,]*,\s*(\w+)::class\.java",
-            re.MULTILINE,
-        )
-        matches = list(assign_pat.finditer(window))
-        if not matches:
+        target = _resolve_local_intent_target(var, window)
+        if not target:
             continue
-        target = matches[-1].group(1)
         edges.append(
             {
                 "from": class_name,

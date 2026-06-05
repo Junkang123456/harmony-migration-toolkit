@@ -182,7 +182,7 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 
 **输出**：`navigation_graph.json`, `navigation_candidates.json`
 
-检测模式：`startActivity(Intent(this, XxxActivity::class.java))`、`XxxDialog().show()`、`intent-filter`、`finish()`/`onBackPressed()`、隐式 Intent、Adapter→Host 绑定、Fragment 导航。
+检测模式：`startActivity(Intent(this, XxxActivity::class.java))`（Kotlin）/ `startActivity(new Intent(this, XxxActivity.class))`（Java）、`XxxDialog().show()`、`intent-filter`、`finish()`/`onBackPressed()`、隐式 Intent、Adapter→Host 绑定、Fragment 导航。
 
 ```json
 {
@@ -193,6 +193,8 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 ```
 
 辅助 `nav_pipeline.py` 三层增强：L1 candidates（原始事实）、L2 通用模式提边（createIntent 工厂、本地 Intent 变量）、L3 可选 per-repo overlay。
+
+本地 Intent 变量解析由共享 helper `_resolve_local_intent_target(var, window)` 完成（L1 candidates 与 L2 提边同源）：在 `startActivity(var)` 调用上方的回溯窗口内，找最近一处把 `var` 绑定到显式 Activity 类literal 的赋值，**同时支持 Kotlin `Intent(ctx, X::class.java)` 与 Java `new Intent(ctx, X.class)`，含无 `val`/`var`/类型声明的重赋值**（如 `intent = new Intent(this, X.class)`）。过程内、纯确定性——找不到显式类literal 时不推断：隐式 Intent（`ACTION_VIEW`/url/浏览器）、工厂构造（`X.createIntent(...)`）、透传 `getIntent()` 一律保持 unresolved，因为没有 app 内目标可链。
 
 ### 5.7 inflate 派生所有权 — `extractors/inflate_owner_map.py`
 
@@ -232,7 +234,7 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 
 边 schema 与导航边一致（`from/to/to_layout/type/via/trigger/line`），`via=fragment_host`/`custom_view_host` 以区分容器与真实导航。在 [8/9] 调 `assemble` 前由 `merge_into_nav` 并入并重写 `navigation_graph.json`（assemble 从盘读 nav）。
 
-覆盖率（WordPress）：从启动页可达屏幕 **5 → 24**（+86 host→区块、+2 屏幕→自定义View）。剩余 24/410 的天花板是导航图本身稀疏（147 个节点零入边、109 个 `unresolved_start_activity` 目标为局部 `intent` 变量未解析），需 Intent 过程内数据流，属另一边界。
+覆盖率（WordPress）：从启动页可达屏幕 **5 → 26**。其中容器边链接贡献 5→24（+86 host→区块、+2 屏幕→自定义View）；本地 Intent 变量解析（§5.6，Kotlin+Java 双形态）把 `unresolved_start_activity` 109→32、`local_intent_var` 30→107、导航边 215→292（新增 77 条全是 Activity 整屏目标），可达再升至 26。剩余 32 条 unresolved 是隐式 Intent（`ACTION_VIEW`/url/浏览器，13 条）、工厂构造与无类literal 的透传 intent（19 条）——过程内无显式 app 内目标可链，留白是诚实结果，不推断。
 
 ### 5.9 动态 UI 检测 — `extractors/dynamic_ui_extractor.py`
 
@@ -651,3 +653,4 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 | 2026-06-05 | Fragment 宿主覆盖三项确定性修复(`fragment_detector.py`)：(a)XML 扫描原只认 `<fragment>` 标签,漏 `FragmentContainerView android:name=` 静态挂载(等价于 `<fragment>`);补识别,排除 `NavHostFragment`(导航容器非屏幕),attach_method=`xml_fragment_container`。(b)orphan 误把抽象基类计入:作为另一 Fragment 父类、自身未直接挂载者(如 `EditorFragmentAbstract`、`ViewPagerFragment`、`SiteCreationBaseFormFragment`)经子类挂载、不需自有宿主,从分母剔除,新增 `coverage.base_class_count`/`needs_host_count`,覆盖率改为 `attached/needs_host`。(c)`_scan_fragment_instantiations` 增 `when` 箭头工厂模式 `-> XFragment(` / `-> X.newInstance(`(`val f = when(step){...}` 工厂,旧 scan 只认 return/赋值)。WordPress orphan 59→25,声明 187/抽象基类 13/需宿主 174/已挂载 149(74%→86%);剩余 25 为两段式 `f=X.newInstance();f.show()` 弹窗与自定义 helper(跨语句/跨过程,真实边界)。main.py [4b] 措辞同步改正:旧"找到所在屏幕"口径错(实为已挂载),改"已挂载到界面的区块 attached/needs_host"并显示抽象基类计数 |
 | 2026-06-05 | 终端步骤重编号(`main.py`)：导航图、Fragment、动态 UI、行为链是各自独立的事实提取器,旧编号把后三者塞为 `[4b/4c/4d]`、分母 `/7` 也对不上,易误读成"导航图的子步骤"。拍平为连续顶层 `[1/9]…[9/9]`(XML/源码/基准事实/导航图/区块/动态UI/行为链/UI DAG/说明书),gap 改 `[可选]` 不占号、交叉验证 `[V]` 同。纯打印标签,无逻辑变更 |
 | 2026-06-05 | 容器边链接(`containment_linker.py`,§5.8b)：导航图只建 Activity startActivity 边,主导航靠 Fragment/底部导航的 App 其枢纽 Activity 几乎无出边,从启动页 BFS 走到枢纽即断(WordPress 可达 5/410)。新增两条确定性容器边并入 nav 图:(a)`host→fragment`(fragments.json),host 经内部类→最外层类解析(`NavAdapter`→`WPMainNavigationView`);(b)`screen→custom-view`,当托管 Fragment 的自定义 View 作为 tag 出现在屏幕布局里(static_xml `tag@layout`),桥接 `Activity→自定义底部导航View→tab`,仅链接真正托管 Fragment 的 View。在 [8/9] 调 assemble 前 `merge_into_nav` 并入并重写 navigation_graph.json。WordPress 可达屏幕 5→24(+86 host→区块、+2 屏幕→自定义View);剩余天花板是导航图稀疏(147 节点零入边、109 `unresolved_start_activity` 为局部 intent 变量未解析,需 Intent 数据流,属另一边界)。每条边都有源码/布局依据,绝不推断 |
+| 2026-06-05 | 本地 Intent 变量过程内解析(`nav_pipeline.py`)：旧回溯正则只认 Kotlin `Intent(ctx, X::class.java)`,把 Java `new Intent(ctx, X.class)` 全漏成 `unresolved_start_activity`(WordPress 109 条中 77 条实为可解的 app 内跳转,目标在 spec 里是 `unknown`,翻译时 router 目标空缺需人工回填)。抽共享 helper `_resolve_local_intent_target(var, window)`,L1 candidates 与 L2 提边(`extract_l2_variable_intent_edges`)同源调用:在 `startActivity(var)` 上方回溯窗口找最近一处把 `var` 绑定到显式 Activity 类literal 的赋值,Kotlin `::class.java` + Java `.class` 双形态、含无 `val`/`var`/类型声明的重赋值(`intent = new Intent(this, X.class)`)。纯确定性,找不到类literal 不推断:隐式 Intent(`ACTION_VIEW`/url/浏览器)、工厂(`X.createIntent`)、透传 `getIntent()` 保持 unresolved。WordPress:`unresolved_start_activity` 109→32、`local_intent_var` 30→107、导航边 215→292(+77 全为 Activity 整屏目标)、跳到整屏 57→134、app_model nav_edges 303→380、paths 783→862、可达屏幕 24→26;屏幕数仍 410(本次只补跳转目标、不增屏)。对翻译的收益:77 个原本"跳转目标未知"的按钮拿到确定 router 目标页,直接可生成 HarmonyOS `router.pushUrl` 接线 |
