@@ -657,6 +657,13 @@ _ADD_SECTION_RE = re.compile(
     re.MULTILINE,
 )
 
+# when(step){ INTENTS -> SiteCreationIntentsFragment() } or
+# WHEN -> HomePagePickerFragment.newInstance(...); also Java switch-arrow.
+_ARROW_FRAG_RE = re.compile(
+    r'->\s*([A-Z]\w+)\s*[.(]',
+    re.MULTILINE,
+)
+
 
 def _scan_fragment_instantiations(project_root: str, dep_roots: list[str] | None = None,
                                     file_prefix: str = "",
@@ -687,7 +694,7 @@ def _scan_fragment_instantiations(project_root: str, dep_roots: list[str] | None
             rel = android_project.relative_to_root(f, root, prefix)
 
             for pattern in (_RETURN_NEW_FRAG_RE, _ASSIGN_NEW_FRAG_RE,
-                           _ASSIGN_KT_FRAG_RE, _ADD_SECTION_RE):
+                           _ASSIGN_KT_FRAG_RE, _ADD_SECTION_RE, _ARROW_FRAG_RE):
                 for m in pattern.finditer(content):
                     cls = m.group(1)
                     if not _is_fragment_class(cls, hierarchy):
@@ -847,22 +854,33 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                         continue
                     for elem in tree.iter():
                         tag = elem.tag
-                        if tag == "fragment" or (isinstance(tag, str) and tag.endswith("}fragment")):
-                            name_attr = elem.get(f"{{{ANDROID_NS}}}name", "") or elem.get("android:name", "") or elem.get("class", "")
-                            if not name_attr:
-                                continue
-                            frag_class = name_attr.rsplit(".", 1)[-1]
-                            container_id = (elem.get(f"{{{ANDROID_NS}}}id", "") or "").replace("@+id/", "").replace("@id/", "")
-                            rel = android_project.relative_to_root(xml_file, root, prefix)
-                            fragments.append({
-                                "class": frag_class,
-                                "container_id": container_id,
-                                "attach_method": "xml_fragment_tag",
-                                "host_class": "",
-                                "host_file": rel,
-                                "line": 0,
-                                "source_file": rel,
-                            })
+                        if not isinstance(tag, str):
+                            continue
+                        is_fragment_tag = tag == "fragment" or tag.endswith("}fragment")
+                        # FragmentContainerView with android:name is a *static* mount,
+                        # equivalent to <fragment>. Without android:name it is a dynamic
+                        # container filled by transactions (no class to bind here).
+                        is_static_container = tag.endswith("FragmentContainerView")
+                        if not (is_fragment_tag or is_static_container):
+                            continue
+                        name_attr = elem.get(f"{{{ANDROID_NS}}}name", "") or elem.get("android:name", "") or elem.get("class", "")
+                        if not name_attr:
+                            continue
+                        frag_class = name_attr.rsplit(".", 1)[-1]
+                        # NavHostFragment is a navigation container, not a real screen block.
+                        if frag_class == "NavHostFragment":
+                            continue
+                        container_id = (elem.get(f"{{{ANDROID_NS}}}id", "") or "").replace("@+id/", "").replace("@id/", "")
+                        rel = android_project.relative_to_root(xml_file, root, prefix)
+                        fragments.append({
+                            "class": frag_class,
+                            "container_id": container_id,
+                            "attach_method": "xml_fragment_tag" if is_fragment_tag else "xml_fragment_container",
+                            "host_class": "",
+                            "host_file": rel,
+                            "line": 0,
+                            "source_file": rel,
+                        })
 
     # Build class hierarchy once, share between AST passes
     hierarchy = build_class_hierarchy(project_root, dep_roots, file_prefix)
@@ -940,12 +958,24 @@ def run(project_root: str, dep_roots: list[str] | None = None,
     # Coverage: all Fragment classes from AST hierarchy
     ast_class_names = {d["class"] for d in ast_decls}
     attached_classes = {f["class"] for f in result_fragments if f["attach_method"] != "class_declaration"}
-    orphan_classes = sorted(ast_class_names - attached_classes) if ast_decls else []
+
+    # A declared fragment that is the supertype of another class is an abstract base:
+    # it reaches the screen through its subclasses, not directly, so it does not need
+    # its own host. Exclude such bases (when not themselves directly attached) from the
+    # orphan set, otherwise they inflate the "no host" count as false positives.
+    base_class_names = {info.base_class for info in hierarchy.values() if info.base_class}
+    base_fragment_names = (ast_class_names & base_class_names) - attached_classes
+
+    needs_host = ast_class_names - base_fragment_names
+    attached_for_host = attached_classes & needs_host
+    orphan_classes = sorted(needs_host - attached_for_host) if ast_decls else []
 
     coverage: dict = {
         "ast_available": bool(ast_decls),
         "declared_fragment_count": len(ast_class_names),
-        "attached_fragment_count": len(attached_classes),
+        "base_class_count": len(base_fragment_names),
+        "needs_host_count": len(needs_host),
+        "attached_fragment_count": len(attached_for_host),
         "orphan_classes": orphan_classes,
     }
 

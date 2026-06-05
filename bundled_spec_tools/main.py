@@ -127,7 +127,7 @@ def main():
     # ── 阶段一：静态提取 ──
 
     # Step 1: XML 静态提取
-    print("\n[1/7] 提取界面资源 (XML resources)…")
+    print("\n[1/9] 提取界面资源 (XML resources)…")
     xml_result = xml_extractor.run(project_root)
     for dep in dep_roots:
         dep_name = Path(dep).name
@@ -154,7 +154,7 @@ def main():
     print(f"  默认隐藏的控件(hidden)：{s['hidden_by_default']}")
 
     # Step 2: Source 静态扫描
-    print("\n[2/7] 扫描源代码 (source code)…")
+    print("\n[2/9] 扫描源代码 (source code)…")
     src_result = source_extractor.run(project_root)
     symbol_payload, call_graph_payload = function_graph_extractor.run(project_root)
     for dep in dep_roots:
@@ -212,7 +212,7 @@ def main():
     print(f"  函数调用关系(call edges)：{call_graph_payload['stats']['call_count']}")
 
     # Step 3: 合并 → ground truth
-    print("\n[3/7] 合并为基准事实 (ground truth)…")
+    print("\n[3/9] 合并为基准事实 (ground truth)…")
     gt = ground_truth_builder.build(
         xml_result,
         src_result,
@@ -233,10 +233,10 @@ def main():
     print(f"  非界面绑定-后台逻辑(non-UI)：{s['non_ui_bindings']}")
     print(f"  未匹配(unmatched)：{s['unmatched']}")
 
-    # ── 阶段二：导航与关联 ──
+    # ── 阶段二：导航、区块与行为提取 ──
 
     # Step 4: 导航图提取
-    print("\n[4/7] 提取导航图-屏幕跳转关系 (navigation graph)…")
+    print("\n[4/9] 提取导航图-屏幕跳转关系 (navigation graph)…")
     nav = navigation_extractor.run(project_root, dep_roots=dep_roots)
     nav_path = out_dir / "navigation_graph.json"
     nav_path.write_text(json.dumps(nav, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -293,7 +293,7 @@ def main():
         print(f"    └ {_EDGE_TYPE_LABELS.get(t, t)}：{c}")
 
     # Step 4b: Fragment 检测
-    print("\n[4b] 检测可复用区块 (fragments)…")
+    print("\n[5/9] 检测可复用区块 (fragments)…")
     frag_result = fragment_detector.run(project_root, dep_roots=dep_roots)
     (out_dir / "fragments.json").write_text(
         json.dumps(frag_result, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -302,13 +302,15 @@ def main():
     print(f"  区块挂载点(fragments)：{fs['total']}（按挂载方式：{fs.get('by_attach_method', {})}）")
     cov = fs.get("coverage", {})
     if cov.get("ast_available"):
-        print(f"  宿主覆盖：{cov['attached_fragment_count']}/{cov['declared_fragment_count']} "
-              f"个声明的区块找到了所在屏幕")
+        nh = cov.get("needs_host_count", cov["declared_fragment_count"])
+        base_n = cov.get("base_class_count", 0)
+        print(f"  已挂载到界面的区块(attached)：{cov['attached_fragment_count']}/{nh}"
+              f"（共声明 {cov['declared_fragment_count']} 个，其中抽象基类 {base_n} 个由子类挂载、不单独计）")
         if cov.get("orphan_classes"):
-            print(f"  孤儿区块-未找到宿主屏幕(orphan)：{cov['orphan_classes']}")
+            print(f"  仍未追到挂载点的区块(orphan)：{len(cov['orphan_classes'])} 个 → {cov['orphan_classes']}")
 
     # Step 4c: 动态 UI 检测
-    print("\n[4c] 检测动态创建的界面 (dynamic UI)…")
+    print("\n[6/9] 检测动态创建的界面 (dynamic UI)…")
     dyn_result = dynamic_ui_extractor.run(project_root, dep_roots=dep_roots)
     (out_dir / "dynamic_ui.json").write_text(
         json.dumps(dyn_result, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -351,7 +353,7 @@ def main():
             print(f"    仍未找到行为(uncovered)：{uncovered}")
 
     # Step 4d: 行为链提取
-    print("\n[4d] 提取行为链-点击到后果 (behavior chains)…")
+    print("\n[7/9] 提取行为链-点击到后果 (behavior chains)…")
     all_xml_ids = {e["id"] for e in xml_result["elements"] if e.get("id")}
     bc_result = behavior_chain_extractor.run(src_result, call_graph_payload, project_root,
                                               xml_ids=all_xml_ids)
@@ -388,7 +390,7 @@ def main():
     gap = {"stats": {"total_resolved": 0, "by_gap_type": {}, "merged_into_gt": False}, "resolved": []}
     if gap_path.exists():
         gap = json.loads(gap_path.read_text(encoding="utf-8"))
-        print(f"\n[5/7] 缺口补充已载入(gap analysis)：{gap['stats']['total_resolved']} 项")
+        print(f"\n[可选] 缺口补充已载入(gap analysis)：{gap['stats']['total_resolved']} 项")
         for k, v in gap["stats"].get("by_gap_type", {}).items():
             print(f"  {k}：{v}")
         # 将 gap 条目合并到 ground_truth 的 dynamic_gap 中
@@ -406,10 +408,10 @@ def main():
         gap["stats"]["merged_into_gt"] = len(gap.get("resolved", []))
         print(f"  已合并 {gap['stats']['merged_into_gt']} 项到基准事实的动态控件中")
     else:
-        print("\n[5/7] 未找到 gap_analysis.json —— 该补充步骤可选，跳过（正常）。")
+        print("\n[可选] 未找到 gap_analysis.json —— 该补充步骤可选，跳过（正常）。")
 
     # Step 6: 动态组装 UI DAG — launcher from AndroidManifest MAIN/LAUNCHER
-    print("\n[6/7] 组装可达屏幕树 (UI DAG)…")
+    print("\n[8/9] 组装可达屏幕树 (UI DAG)…")
     from extractors.ui_dag_assembler import assemble, assemble_all_flat_paths, assemble_flat_paths, set_output_dir
     from extractors.app_model_builder import build_and_write
     from extractors.app_model_schema import path_display_report_from_segments
@@ -577,7 +579,7 @@ def main():
     # ── 阶段三：Spec 生成 ──
 
     # Step 7: 为导航图中的每个屏幕生成 HarmonyOS 迁移 spec
-    print("\n[7/7] 生成每屏的鸿蒙迁移说明书 (specs)…")
+    print("\n[9/9] 生成每屏的鸿蒙迁移说明书 (specs)…")
     specs_dir = out_dir / "specs"
     specs_dir.mkdir(exist_ok=True)
 
