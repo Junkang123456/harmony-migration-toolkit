@@ -95,6 +95,93 @@ def _parse_stages(raw: str) -> set[int]:
     return stages
 
 
+def _build_counts_section(facts_dir: Path, framework_map_path: Path,
+                          harmony_arch_path: Path, feature_tree_path: Path) -> str:
+    """Render a counts summary of the produced artifacts as a markdown section.
+
+    Reads only schema-stable count fields from the canonical artifacts, so it is
+    app-agnostic (no WordPress/AntennaPod assumptions). Every read is guarded —
+    a partial run (some stages skipped, some files missing) still yields the rows
+    it can fill, and absent artifacts are simply omitted rather than erroring.
+    Cost is a handful of small-JSON reads plus one glob; negligible next to the
+    scan that produced them.
+    """
+    from collections import Counter
+
+    def _load(path: Path):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _table(title: str, rows: list[tuple[str, str]]) -> list[str]:
+        if not rows:
+            return []
+        out = [f"### {title}\n", "| 指标 metric | 数量 count |", "|------|------|"]
+        out += [f"| {k} | {v} |" for k, v in rows]
+        out.append("")
+        return out
+
+    lines: list[str] = []
+
+    # ── Stage 0: static facts ──
+    s0: list[tuple[str, str]] = []
+    nav = _load(facts_dir / "navigation_graph.json")
+    if nav:
+        nodes = nav.get("nodes", {}) or {}
+        by_type = Counter(n.get("type", "?") for n in nodes.values())
+        type_str = " / ".join(f"{t} {c}" for t, c in sorted(by_type.items(), key=lambda kv: -kv[1]))
+        s0.append(("屏幕节点 navigation_graph.nodes", f"{len(nodes)}（{type_str}）" if type_str else str(len(nodes))))
+        s0.append(("导航边 navigation_graph.edges", str(len(nav.get("edges", []) or []))))
+    fr = _load(facts_dir / "fragments.json")
+    if fr:
+        cov = (fr.get("stats", {}) or {}).get("coverage", {}) or {}
+        if cov.get("declared_fragment_count") is not None:
+            s0.append(("Fragment 声明/已挂载/孤儿 declared/attached/orphan",
+                       f"{cov.get('declared_fragment_count')} / "
+                       f"{cov.get('attached_fragment_count')} / "
+                       f"{len(cov.get('orphan_classes', []) or [])}"))
+    bc = _load(facts_dir / "behavior_chains.json")
+    if bc:
+        s0.append(("行为链 behavior_chains", str(len(bc.get("behavior_chains", []) or []))))
+    specs = list((facts_dir / "specs").glob("*_spec.json"))
+    if specs:
+        s0.append(("屏幕说明书 specs/*.json", str(len(specs))))
+    dag = _load(facts_dir / "ui_dag.json")
+    if dag and "screens" in (dag.get("aggregate_stats", {}) or {}):
+        s0.append(("启动页可达屏幕 ui_dag.reachable", str(dag["aggregate_stats"]["screens"])))
+    lines += _table("Stage 0 — 静态事实 `intermediate/0_android_facts/`", s0)
+
+    # ── App model (already a counts dict) ──
+    am = _load(facts_dir / "app_model" / "index.json")
+    if am and isinstance(am.get("counts"), dict):
+        lines += _table("App 模型 `intermediate/0_android_facts/app_model/`",
+                        [(k, str(v)) for k, v in am["counts"].items()])
+
+    # ── Later stages ──
+    later: list[tuple[str, str]] = []
+    fm = _load(framework_map_path)
+    if fm:
+        later.append(("Stage 2 framework_map.mappings", str(len(fm.get("mappings", []) or []))))
+        later.append(("Stage 2 framework_map.gap_items", str(len(fm.get("gap_items", []) or []))))
+    ha = _load(harmony_arch_path)
+    if ha:
+        later.append(("Stage 3 harmony_arch.modules", str(len(ha.get("modules", []) or []))))
+        later.append(("Stage 3 harmony_arch.abilities", str(len(ha.get("abilities", []) or []))))
+        later.append(("Stage 3 harmony_arch.routes", str(len(ha.get("routes", []) or []))))
+    ft = _load(feature_tree_path)
+    if ft:
+        later.append(("Stage 5 feature_tree.nodes", str(len(ft.get("nodes", []) or []))))
+        later.append(("Stage 5 feature_tree.edges", str(len(ft.get("edges", []) or []))))
+    lines += _table("后续阶段 framework map / harmony arch / feature tree", later)
+
+    if not lines:
+        return ""
+    return ("\n## 数量统计 (Counts)\n\n"
+            "> 由 pipeline 在产物生成后从各阶段产物自动统计，随每次运行刷新；"
+            "未运行的阶段或缺失的产物自动省略。\n\n" + "\n".join(lines))
+
+
 def main() -> int:
     root = toolkit_root()
     parser = argparse.ArgumentParser(description="Harmony migration deterministic IR pipeline")
@@ -261,10 +348,15 @@ def main() -> int:
 
     # Ship the directory-level product index with the output, so an agent that
     # only sees <output>/ (not the toolkit source tree) can still orient itself.
+    # The shipped copy also carries a live "数量统计" section computed from the
+    # artifacts just produced, so the root index reflects this run's counts.
     index_src = toolkit_root() / "docs" / "PIPELINE_OUTPUTS.md"
     if index_src.is_file():
+        index_text = index_src.read_text(encoding="utf-8")
+        counts_section = _build_counts_section(
+            facts_dir, framework_map_path, harmony_arch_path, feature_tree_path)
         (out_dir / "PIPELINE_OUTPUTS.md").write_text(
-            index_src.read_text(encoding="utf-8"), encoding="utf-8")
+            index_text + counts_section, encoding="utf-8")
 
     print("Pipeline completed.", file=sys.stderr)
     return 0

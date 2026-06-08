@@ -35,6 +35,18 @@ _FRAGMENT_TX_RE = re.compile(
     re.MULTILINE,
 )
 
+# Pattern 1b: Kotlin-ktx reified FragmentTransaction extensions —
+# `transaction.add<SomeFragment>(R.id.container)` /
+# `replace<SomeFragment>(R.id.container)`. The fragment class is the type
+# argument, not a constructor argument, so Pattern 1 misses it entirely. The
+# call is often bare (no receiver dot) inside a `commit { add<T>(...) }` lambda,
+# so the leading delimiter is `.`, whitespace, `{`, `(`, or line start; the
+# `_is_fragment_name` gate keeps this from matching unrelated generic calls.
+_FRAGMENT_TX_REIFIED_RE = re.compile(
+    r'(?:^|[.\s({])(replace|add)\s*<\s*(\w+)\s*>\s*\(\s*(?:R\.id\.(\w+))?',
+    re.MULTILINE,
+)
+
 # Pattern 2: Fragment adapter classes
 _FRAGMENT_ADAPTER_CLASS_RE = re.compile(
     r'class\s+(\w+)\s*[^{]*(?:extends|:)\s*'
@@ -56,6 +68,7 @@ _ATTACH_PRIORITY = {
     "FragmentTransaction.replace": 0,
     "FragmentTransaction.add": 0,
     "ViewPager2+FragmentStateAdapter": 1,
+    "nav_graph_destination": 2,
     "xml_fragment_tag": 2,
     "class_declaration": 3,
 }
@@ -664,6 +677,17 @@ _ARROW_FRAG_RE = re.compile(
     re.MULTILINE,
 )
 
+# X.newInstance(...) as the RHS of an assignment / return / when-arm, or passed
+# directly as an argument. The assignment/instantiation regexes above require a
+# bare constructor (`= X(`), so the very common companion-factory form
+# (`val f = X.newInstance(...)`, `return X.newInstance(...)`,
+# `loadFragment(X.newInstance(...))`) slips through. Class is gated by
+# _is_fragment_class so non-fragment newInstance calls are ignored.
+_NEWINSTANCE_FACTORY_RE = re.compile(
+    r'(?:[=(,]|->|\breturn\b)\s*([A-Z]\w*)\.newInstance\s*\(',
+    re.MULTILINE,
+)
+
 
 def _scan_fragment_instantiations(project_root: str, dep_roots: list[str] | None = None,
                                     file_prefix: str = "",
@@ -694,7 +718,8 @@ def _scan_fragment_instantiations(project_root: str, dep_roots: list[str] | None
             rel = android_project.relative_to_root(f, root, prefix)
 
             for pattern in (_RETURN_NEW_FRAG_RE, _ASSIGN_NEW_FRAG_RE,
-                           _ASSIGN_KT_FRAG_RE, _ADD_SECTION_RE, _ARROW_FRAG_RE):
+                           _ASSIGN_KT_FRAG_RE, _ADD_SECTION_RE, _ARROW_FRAG_RE,
+                           _NEWINSTANCE_FACTORY_RE):
                 for m in pattern.finditer(content):
                     cls = m.group(1)
                     if not _is_fragment_class(cls, hierarchy):
@@ -811,6 +836,25 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                 "source_file": rel_path,
             })
 
+        # Pattern 1b: ktx reified add<T>()/replace<T>()
+        for m in _FRAGMENT_TX_REIFIED_RE.finditer(content):
+            method = m.group(1)
+            frag_class = m.group(2)
+            container_id = m.group(3) or ""
+            if not _is_fragment_name(frag_class):
+                continue
+            line = _line_number(content, m.start())
+            host = _find_host_class(content, line - 1)
+            fragments.append({
+                "class": frag_class,
+                "container_id": container_id,
+                "attach_method": f"FragmentTransaction.{method}",
+                "host_class": host,
+                "host_file": rel_path,
+                "line": line,
+                "source_file": rel_path,
+            })
+
         # Pattern 2: FragmentPagerAdapter/FragmentStateAdapter
         for m_cls in _FRAGMENT_ADAPTER_CLASS_RE.finditer(content):
             adapter_class = m_cls.group(1)
@@ -876,6 +920,41 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                             "class": frag_class,
                             "container_id": container_id,
                             "attach_method": "xml_fragment_tag" if is_fragment_tag else "xml_fragment_container",
+                            "host_class": "",
+                            "host_file": rel,
+                            "line": 0,
+                            "source_file": rel,
+                        })
+
+            # Navigation Component graphs (res/navigation/*.xml). Every <fragment>
+            # and <dialog> destination is a hosted screen; android:name carries its
+            # class. <activity> is an external launch, and <argument>/<action>/
+            # <deepLink>/<include> are not classes, so they are skipped by tag.
+            for nav_dir in res_dir.glob("navigation*"):
+                for xml_file in nav_dir.glob("*.xml"):
+                    try:
+                        tree = ET.parse(xml_file)
+                    except ET.ParseError:
+                        continue
+                    for elem in tree.iter():
+                        tag = elem.tag
+                        if not isinstance(tag, str):
+                            continue
+                        local = tag.rsplit("}", 1)[-1]
+                        if local not in ("fragment", "dialog"):
+                            continue
+                        name_attr = elem.get(f"{{{ANDROID_NS}}}name", "") or elem.get("android:name", "")
+                        if not name_attr or "." not in name_attr:
+                            continue
+                        frag_class = name_attr.rsplit(".", 1)[-1]
+                        if frag_class == "NavHostFragment":
+                            continue
+                        container_id = (elem.get(f"{{{ANDROID_NS}}}id", "") or "").replace("@+id/", "").replace("@id/", "")
+                        rel = android_project.relative_to_root(xml_file, root, prefix)
+                        fragments.append({
+                            "class": frag_class,
+                            "container_id": container_id,
+                            "attach_method": "nav_graph_destination",
                             "host_class": "",
                             "host_file": rel,
                             "line": 0,

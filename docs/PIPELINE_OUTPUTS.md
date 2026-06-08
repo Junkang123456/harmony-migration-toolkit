@@ -5,6 +5,9 @@ an index ("what lives where"), not a field reference — for stage-0 field detai
 see [`bundled_spec_tools/ARCHITECTURE.md`](../bundled_spec_tools/ARCHITECTURE.md);
 for the feature-tree / bundle schemas see `docs/FEATURE_TREE_AND_VIEWER_DESIGN.md`.
 
+> The copy shipped into `<output>/` carries a live **数量统计 (Counts)** section at
+> the end, computed from the artifacts of that run (this source template does not).
+
 Default stage order is `0,1,2,3,5,4,7`. Each stage's products live under
 `<output>/intermediate/<n>_<name>/`; the final deliverable sits at the output root.
 

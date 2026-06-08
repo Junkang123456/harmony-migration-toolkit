@@ -58,7 +58,7 @@ python pipeline.py --android-root <android_project_root> --out <dir>
 [9/9] Spec 生成             → specs/*.json, screen_index.json, app_model/
 ```
 
-> 注：导航图(4)、Fragment(5)、动态 UI(6)、行为链(7)是**各自独立**的事实提取器，无从属关系；早期把后三者编为 `[4b/4c/4d]` 易误读成"导航图的子步骤"，2026-06-05 拍平为连续顶层编号。
+> 注：导航图(4)、Fragment(5)、动态 UI(6)、行为链(7)是**各自独立**的事实提取器，无从属关系；终端按连续顶层编号 `[1/9]…[9/9]` 呈现，避免把后三者读成"导航图的子步骤"。
 
 ### 依赖关系图
 
@@ -154,7 +154,7 @@ function_graph ────┼─→ inflate_owner_map ────┤   (join i
 ### 5.4 AST 索引 — `extractors/ast_index.py`
 
 tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺失时各模块回退正则）：
-- `parse_file(src_path)` — **共享解析缓存**：按 (路径, mtime, size) 缓存 `(source, root_node)`，一次 run 内同一文件只解析一次。`build_class_hierarchy`、`build_project_index`、fragment_detector、dynamic_ui_extractor、source_extractor 全部复用，消除跨模块的重复全量解析（见 §11 2026-06-04 缓存条目）
+- `parse_file(src_path)` — **共享解析缓存**：按 (路径, mtime, size) 缓存 `(source, root_node)`，一次 run 内同一文件只解析一次。`build_class_hierarchy`、`build_project_index`、fragment_detector、dynamic_ui_extractor、source_extractor 全部复用，消除跨模块的重复全量解析（否则同一批源文件一次 run 内会被重复解析 6–9 遍）。
 - `build_class_hierarchy(project_root)` — 继承链映射（按 `(project_root, dep_roots, file_prefix)` 记忆化）
 - `lookup_class(name)` / `_resolve_android_base(class_name)` — 判定 Activity/Fragment/Dialog/Service
 - `find_enclosing_symbol(file, line)` — 行号 → 所属函数符号
@@ -213,14 +213,14 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 
 **输出**：`fragments.json`
 
-9 种挂载模式：FragmentTransaction.replace/add（正则）、ViewPager Adapter、XML `<fragment>` 标签 + `FragmentContainerView android:name=`（静态挂载，等价于 `<fragment>`；排除 `NavHostFragment`）、AST 类声明、AST FragmentTransaction、AST loadFragment/showFragment、AST `.show()`（DialogFragment）、AST switch-case 工厂、Fragment 实例化上下文（含 `when` 箭头工厂 `-> XFragment()` / `-> X.newInstance()`）。
+12 种挂载模式：FragmentTransaction.replace/add（正则）、ktx 泛型事务 `add<T>()`/`replace<T>()`（类作为类型参数，含 `commit { add<T>(...) }` 内的无接收者裸调用）、ViewPager Adapter、XML `<fragment>` 标签 + `FragmentContainerView android:name=`（静态挂载，等价于 `<fragment>`；排除 `NavHostFragment`）、Navigation Component 导航图 `res/navigation/*.xml` 的 `<fragment>`/`<dialog>` 目的地、AST 类声明、AST FragmentTransaction、AST loadFragment/showFragment、AST `.show()`（DialogFragment）、AST switch-case 工厂、Fragment 实例化上下文（含 `when` 箭头工厂 `-> XFragment()` / `-> X.newInstance()`、以及赋值/return/传参位置的 `X.newInstance(...)`）。
 
 `_resolve_fragment_arg()` 追踪数据流确定实际 Fragment 类：直接类名 → `new Xxx()` → `Xxx.newInstance()` → 变量赋值 → 方法返回值。
 
 **宿主覆盖口径**：抽象基类（作为另一 Fragment 的父类、自身未被直接挂载）通过子类挂载，不需要自己的宿主，从 orphan 分母中剔除（`coverage.base_class_count`）。覆盖率 = `attached_fragment_count / needs_host_count`，`needs_host = 声明总数 − 抽象基类`。
 
 覆盖率（AntennaPod）：84 个声明 Fragment 中 79 个找到宿主（94%）。
-覆盖率（WordPress）：声明 187，抽象基类 13，需宿主 174，已挂载 149（86%）；剩余 25 个 orphan 为两段式 `f = X.newInstance(); f.show()` 弹窗与自定义 helper（跨语句变量/跨过程，超出单文件正则+数据流范围）。
+覆盖率（WordPress）：声明 187，抽象基类 13，需宿主 174，已挂载 163（94%）；剩余 11 个 orphan 为两段式 `f = X.newInstance(); f.show()` 弹窗、自定义挂载 helper（如 `replaceFragment(X())`）、`setContent(X::class.java)` 导航构建器、`else X()` 裸工厂等跨语句/跨过程写法，超出单文件正则+数据流范围。
 
 ### 5.8b 容器边链接 — `extractors/containment_linker.py`
 
@@ -507,6 +507,8 @@ Stage 0 把 spec 写入临时目录后，`stages/stage0_run_spec_tools.py::_norm
 | `app_model/` | ~1MB | 分层 App 模型 |
 | `verification_report.json` | — | 交叉验证（--validate） |
 
+> 经 `pipeline.py` 运行时（非仅 Stage 0），产物根目录另带一份 `PIPELINE_OUTPUTS.md` 索引（"什么产物在哪"的目录级地图）。其末尾的**数量统计 (Counts)** 小节由 `_build_counts_section()` 在产物生成后从各阶段产物（navigation_graph / fragments / behavior_chains / ui_dag / app_model / framework_map / harmony_arch / feature_tree）现读现算，随每次运行刷新；每处读取都有兜底，缺失的阶段自动省略，故部分 stage 跑也不报错。计数字段都取各产物 schema 稳定的现成统计，泛化不针对单一仓。
+
 ---
 
 ## 8. 覆盖率边界与未能分析的原因
@@ -614,43 +616,3 @@ spec 在 generate_specs 按渐进式披露顺序构建，且 Stage 0 路径归�
 - **边界透明**：无法分析的项用 orphan/uncovered/inferred 统计如实暴露，不用脆弱正则掩盖（见 §8）
 - **v2 唯一 schema**：v1 冗余字段已删除
 - **同步更新本文档**：每次代码改动一并更新 ARCHITECTURE.md
-
----
-
-## 11. 修改日志
-
-| 日期 | 变更 |
-|------|------|
-| 2026-05-30 | Fragment 宿主检测：6/84 → 79/84（94%），新增 9 种检测模式 |
-| 2026-05-30 | 修复 spec 膨胀：32MB → 1.5MB，守卫空 class_name |
-| 2026-05-30 | ViewBinding element_id 解析：0% → 87% |
-| 2026-05-30 | 提取共享 view_ref_utils 模块；effect_summary 标签 |
-| 2026-05-30 | Spec v2.1/v2.2：删冗余 v1 字段，新增 brief，合并 ui/dynamic/structure，navigation 前移 |
-| 2026-06-01 | 事件注册增强：链式 findViewById + 局部变量追踪 + 过滤 null/remove/PendingIntent |
-| 2026-06-01 | 为未绑定 interactive 控件合成 event_binding |
-| 2026-06-02 | Behavior chain 分配对齐：handler_class 匹配减少 orphan；终端 assigned/orphan/duplicated/synthetic 统计 |
-| 2026-06-02 | Handler 恢复增强：callback metadata，支持 method_ref/callback_var/anonymous_listener/fallback_chain |
-| 2026-06-02 | by_confidence 三级置信度统计 |
-| 2026-06-03 | 共享未绑定控件推断层 unbound_control_inference.py；ground_truth 产出 inferred_event_bindings |
-| 2026-06-03 | Orphan claiming：内部类→外部类解析 + adapter_class→item_layout + chain 携带 claim_hints |
-| 2026-06-03 | Handler body 提取成员调用 + Kotlin 属性式 UI 变更：no_chain 80→13，with-chain 293→360 |
-| 2026-06-03 | 深层 call 噪声剪枝：call 步骤 2354→1375，behavior_chains.json 1.9MB→720KB，覆盖率无损 |
-| 2026-06-03 | inflate 派生 class→layout（inflate_owner_map）：orphan 53→45，unknown screen_type 60→50，新增 18 映射 |
-| 2026-06-03 | Spec 字段重排：brief 提至最前，event_bindings 内 effect_summary 先于 effect_chain |
-| 2026-06-03 | 修复 Stage 0 路径归一化误用 sort_keys 破坏 spec 字段顺序；改为顺序保持序列化 |
-| 2026-06-03 | 文档重写：补充覆盖率边界与未能分析项的根因分析（§8） |
-| 2026-06-03 | 非 UI 组件归类 non_ui_components.py（§5.15）：orphan 行为按 service/widget/receiver/listener 聚合 + 鸿蒙能力提示；manifest/字节码/类名三级确定性判定；UI 类（adapter/Fragment）排除。新增 `non_ui_components.json` |
-| 2026-06-04 | 非 UI 组件揭示双向联系（§5.15）：经 `call_graph` 精确类名匹配补 `used_by`（调用者类 + 是否屏幕）；`inject_screen_backrefs()` 以 spec 的 `class` 字段为权威键把组件反链写入屏幕 spec 的 `non_ui_dependencies`；匹配不上不模糊猜测 |
-| 2026-06-04 | 入口脚本强制 UTF-8 stdout/stderr：进度打印含 → / ↔ 等字符,stdout 被管道/重定向捕获时在非 UTF-8 locale(Windows cp936)会 UnicodeEncodeError 整体崩溃,现 `reconfigure(encoding="utf-8")` 兜底 |
-| 2026-06-04 | 导航节点排除非屏幕协作类(`_is_non_screen_class`)：叶名以 Callback/ViewHolder/Holder/Adapter/Listener/Observer 结尾者不再因含 "Dialog"/"BottomSheet" 子串被误判为 dialog 屏幕(如 `ReorderDialogAdapter$HeaderViewHolder`、`MainActivity$AntennaPodBottomSheetCallback`);AntennaPod nav 节点 110→105 |
-| 2026-06-04 | spec 空 class 仅填空兜底：layout→class 由 `inflate_class_layouts` 反转(单一归属)得到真实 inflate 站点所有权,经 `inflate_owner_layouts` 传入 `generate_all_specs`,只填导航未解析的 layout(audioplayer_fragment→AudioPlayerFragment 等),共享/局部布局诚实留空;AntennaPod 空 class 43→31、unknown screen_type 50→38 |
-| 2026-06-04 | 修复 `_node_type` 把 Fragment 塌缩成 activity(`navigation_extractor.py`)：AST 继承链已正确识别 fragment,旧代码 `return t if t != "fragment" else "activity"` 把它改写成 activity,致 nav 节点 type 只有 activity/dialog、177 屏幕中 47 个 Fragment/Dialog 误标。删除塌缩并细化:DialogFragment/BottomSheetDialogFragment 按继承解析为 fragment 但以模态呈现,经 `_is_dialog_class` 归 dialog(→CustomDialog),plain Fragment 保留 fragment(→@Component),Activity→activity(→UIAbility)。AntennaPod 节点 type 分布 activity 71/dialog 39/fragment 0 → activity 23/fragment 28/dialog 54;stats 与终端汇总新增 fragment_nodes 计数 |
-| 2026-06-04 | tree-sitter 解析缓存(`ast_index.py`)：同一批源文件在一次 run 内被重复解析 6-9 遍(build_class_hierarchy 从 navigation/source/fragment/validate 各调一次,build_project_index 从 function_graph/navigation 调,fragment_detector 每种检测模式自解析,dynamic_ui/source_extractor 各自解析)。新增 `parse_file(src_path)` 按 (路径,mtime,size) 缓存 `(source,root_node)`(tree 不可变,只读复用安全;tree 对象留在元组内保活节点),并给 `build_class_hierarchy` 按 `(project_root,dep_roots,file_prefix)` 记忆化。fragment_detector(4 处)、dynamic_ui、source_extractor、build_project_index 均改走 `parse_file`。实测 AntennaPod 534 文件:hierarchy 重复构建 15.35s→0.0000s,解析缓存命中后各 extractor 不再重解析 |
-| 2026-06-04 | 修复 UI DAG 在 `--out` 模式下整段产出为空(`ui_dag_assembler.py`)：`_load_json` 硬编码从 `bundled_spec_tools/output/` 读 nav/ground_truth/static_xml,而 pipeline 以 `--out intermediate/0_android_facts` 运行时该默认目录陈旧/不存在 → nav 加载 0 节点 → DAG 在 launcher(splash)断头(`screen_class:""`,1 屏 0 元素,`ui_paths.json` 为 `[]`),依赖路径的 app_model/paths、feature tree、agent bundle 全空。新增 `set_output_dir()`,main.py 在 [6/7] 调 assemble 前指向真实 `out_dir`。修复后 AntennaPod:nav 110 节点、DAG 可达 21 屏/32 元素、flat 16 + all_flat 436 条路径 |
-| 2026-06-04 | 导航目标去噪(`navigation_extractor.py`)：(a)生成的 ActivityStarter 包装类 `XxxActivityStarter` 被当成屏幕目标并造假布局 `xxx_activity_starter`。新增 `_dereference_starter()` 把它解引用到真实 Activity(对已扫描类名**大小写不敏感**匹配,因生成器会改大小写:`OnlineFeedviewActivityStarter`→`OnlineFeedViewActivity`,真实 layout `onlinefeedview_activity`),只在解析到真实类时改写、否则不动,绝不臆造目标;改写后清空 stale `to_layout` 交由 backfill 重算。(b)`Builder` 加入 `_NON_SCREEN_SUFFIXES`,框架 builder(`MaterialAlertDialogBuilder`)不再成为 dialog 屏幕节点——内联 dialog 的"打开"信号仍保留在 behavior chain 的 handler 调用里,不丢功能只去伪屏幕。AntennaPod nav 节点 105→100,指向 Starter/Builder/假布局的边 9→0 |
-| 2026-06-04 | 统一 `is_interactive` 口径(`generate_specs.py`)：`_build_brief` 以 `is_interactive OR 有 effect_summary` 纳入 `brief.interactive_controls`,但 `ui.elements` 照搬 XML 静态 `is_interactive`,致同一控件(如 ImageView/TextView 经 setOnClickListener 绑定)在 brief 里可交互、在 `ui.elements` 里 `is_interactive:false`,自相矛盾误导翻译 agent。在 `_build_brief` 前回填:凡有 event_binding 的 ui.element 标 `is_interactive=true`。AntennaPod 不一致 34→0;`stats.interactive`/screen_index interactive 计数随之更准 |
-| 2026-06-04 | 调查 `ui_effect_paths.json` 在 AntennaPod 为 0(`nav_pipeline.build_ui_effect_paths`)：结论为**合法边界,非 bug**。该子系统是 report-only 补充,只匹配代码/Compose 菜单 DSL(`_UI_ITEM_CALL` = `\w*Item(R.string.xxx)`)与 settings DSL;AntennaPod 用 XML 菜单(`res/menu/*.xml`)+`onOptionsItemSelected` switch,不用该 idiom,故 `collect_ui_action_bindings` 仅匹到 2 条(含 1 误报),且都 resolve 为 `unknown` 被过滤 → 0 条。真实菜单/导航信号已由 navigation_extractor + behavior_chains + static_xml 覆盖,无损失。不放宽正则强行出路径(那将编造 effect,违反 §2/§8)。未改代码 |
-| 2026-06-05 | Fragment 宿主覆盖三项确定性修复(`fragment_detector.py`)：(a)XML 扫描原只认 `<fragment>` 标签,漏 `FragmentContainerView android:name=` 静态挂载(等价于 `<fragment>`);补识别,排除 `NavHostFragment`(导航容器非屏幕),attach_method=`xml_fragment_container`。(b)orphan 误把抽象基类计入:作为另一 Fragment 父类、自身未直接挂载者(如 `EditorFragmentAbstract`、`ViewPagerFragment`、`SiteCreationBaseFormFragment`)经子类挂载、不需自有宿主,从分母剔除,新增 `coverage.base_class_count`/`needs_host_count`,覆盖率改为 `attached/needs_host`。(c)`_scan_fragment_instantiations` 增 `when` 箭头工厂模式 `-> XFragment(` / `-> X.newInstance(`(`val f = when(step){...}` 工厂,旧 scan 只认 return/赋值)。WordPress orphan 59→25,声明 187/抽象基类 13/需宿主 174/已挂载 149(74%→86%);剩余 25 为两段式 `f=X.newInstance();f.show()` 弹窗与自定义 helper(跨语句/跨过程,真实边界)。main.py [4b] 措辞同步改正:旧"找到所在屏幕"口径错(实为已挂载),改"已挂载到界面的区块 attached/needs_host"并显示抽象基类计数 |
-| 2026-06-05 | 终端步骤重编号(`main.py`)：导航图、Fragment、动态 UI、行为链是各自独立的事实提取器,旧编号把后三者塞为 `[4b/4c/4d]`、分母 `/7` 也对不上,易误读成"导航图的子步骤"。拍平为连续顶层 `[1/9]…[9/9]`(XML/源码/基准事实/导航图/区块/动态UI/行为链/UI DAG/说明书),gap 改 `[可选]` 不占号、交叉验证 `[V]` 同。纯打印标签,无逻辑变更 |
-| 2026-06-05 | 容器边链接(`containment_linker.py`,§5.8b)：导航图只建 Activity startActivity 边,主导航靠 Fragment/底部导航的 App 其枢纽 Activity 几乎无出边,从启动页 BFS 走到枢纽即断(WordPress 可达 5/410)。新增两条确定性容器边并入 nav 图:(a)`host→fragment`(fragments.json),host 经内部类→最外层类解析(`NavAdapter`→`WPMainNavigationView`);(b)`screen→custom-view`,当托管 Fragment 的自定义 View 作为 tag 出现在屏幕布局里(static_xml `tag@layout`),桥接 `Activity→自定义底部导航View→tab`,仅链接真正托管 Fragment 的 View。在 [8/9] 调 assemble 前 `merge_into_nav` 并入并重写 navigation_graph.json。WordPress 可达屏幕 5→24(+86 host→区块、+2 屏幕→自定义View);剩余天花板是导航图稀疏(147 节点零入边、109 `unresolved_start_activity` 为局部 intent 变量未解析,需 Intent 数据流,属另一边界)。每条边都有源码/布局依据,绝不推断 |
-| 2026-06-05 | 本地 Intent 变量过程内解析(`nav_pipeline.py`)：旧回溯正则只认 Kotlin `Intent(ctx, X::class.java)`,把 Java `new Intent(ctx, X.class)` 全漏成 `unresolved_start_activity`(WordPress 109 条中 77 条实为可解的 app 内跳转,目标在 spec 里是 `unknown`,翻译时 router 目标空缺需人工回填)。抽共享 helper `_resolve_local_intent_target(var, window)`,L1 candidates 与 L2 提边(`extract_l2_variable_intent_edges`)同源调用:在 `startActivity(var)` 上方回溯窗口找最近一处把 `var` 绑定到显式 Activity 类literal 的赋值,Kotlin `::class.java` + Java `.class` 双形态、含无 `val`/`var`/类型声明的重赋值(`intent = new Intent(this, X.class)`)。纯确定性,找不到类literal 不推断:隐式 Intent(`ACTION_VIEW`/url/浏览器)、工厂(`X.createIntent`)、透传 `getIntent()` 保持 unresolved。WordPress:`unresolved_start_activity` 109→32、`local_intent_var` 30→107、导航边 215→292(+77 全为 Activity 整屏目标)、跳到整屏 57→134、app_model nav_edges 303→380、paths 783→862、可达屏幕 24→26;屏幕数仍 410(本次只补跳转目标、不增屏)。对翻译的收益:77 个原本"跳转目标未知"的按钮拿到确定 router 目标页,直接可生成 HarmonyOS `router.pushUrl` 接线 |

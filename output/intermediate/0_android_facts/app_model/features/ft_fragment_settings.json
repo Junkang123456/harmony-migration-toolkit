@@ -1,8 +1,0 @@
-{
-  "entry_path_ids_sample": [],
-  "feature_id": "ft:fragment_settings",
-  "related_nav_edge_ids": [],
-  "related_ui_point_ids": [
-    "up:fragment_settings:settings_title"
-  ]
-}

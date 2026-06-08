@@ -20,10 +20,13 @@ from pathlib import Path
 from .view_ref_utils import camel_to_snake as _camel_to_snake
 from .view_ref_utils import clean_view_ref as _clean_ref
 from .view_ref_utils import resolve_view_id as _resolve_view_id
+from .unbound_control_inference import build_layout_contexts, infer_unbound_event_bindings
 
 
 def build(xml_result: dict, source_result: dict, *,
-          view_ref_id_map: dict | None = None) -> dict:
+          view_ref_id_map: dict | None = None,
+          nav_result: dict | None = None,
+          adapter_layouts: list[dict] | None = None) -> dict:
     elements = {e["id"]: e for e in xml_result["elements"] if e.get("id")}
     findings = source_result["findings"]
     file_maps = view_ref_id_map or {}
@@ -115,7 +118,11 @@ def build(xml_result: dict, source_result: dict, *,
             "note":          dd.get("note", ""),
         })
 
-    # ── 6. 统计 ──────────────────────────────────────────────────
+    # ── 6. 推断未绑定 interactive controls ───────────────────────
+    layout_contexts = build_layout_contexts(nav_result or {}, adapter_layouts)
+    inferred_bindings, inferred_stats = infer_unbound_event_bindings(list(elements.values()), layout_contexts)
+
+    # ── 7. 统计 ──────────────────────────────────────────────────
     all_elems      = list(elements.values())
     with_behaviors = [e for e in all_elems if e.get("behaviors")]
     conditional    = [e for e in all_elems if e.get("conditional_visibility")]
@@ -135,6 +142,9 @@ def build(xml_result: dict, source_result: dict, *,
         "data_driven_ui":             len(data_driven),
         "non_ui_bindings":            len(non_ui_bindings),
         "unmatched":                  len(unmatched),
+        "inferred_unbound_bindings":  len(inferred_bindings),
+        "inferred_unbound_covered":   inferred_stats.get("covered", 0),
+        "inferred_unbound_uncovered": inferred_stats.get("uncovered", 0),
     }
 
     return {
@@ -142,6 +152,8 @@ def build(xml_result: dict, source_result: dict, *,
         "dynamic_gap":     gap_elements,
         "non_ui_bindings": non_ui_bindings,
         "unmatched":       unmatched,
+        "inferred_event_bindings": inferred_bindings,
+        "inferred_event_binding_stats": inferred_stats,
         "coverage_stats":  stats,
     }
 

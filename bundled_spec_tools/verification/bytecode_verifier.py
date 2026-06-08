@@ -17,20 +17,27 @@ _ANDROID_ACTIVITY_BASES_SHORT = {
 }
 
 
+_IGNORE_PARTS = {".gradle", ".git", ".idea", ".dep_cache"}
+
+
 def _class_dirs(project_root: str | Path) -> list[tuple[Path, str]]:
     root = Path(project_root)
     items: list[tuple[Path, str]] = []
-    build_roots: list[tuple[Path, str]] = [(root, root.name)]
-    for e in root.iterdir():
-        if e.is_dir() and not e.name.startswith("."):
-            build_roots.append((e, e.name))
-    for br, module_name in build_roots:
-        for candidate in ("intermediates/javac", "tmp/kotlin-classes"):
-            parent = br / "build" / candidate
-            if parent.is_dir():
-                for variant in parent.iterdir():
-                    if variant.is_dir():
-                        items.append((variant, module_name))
+    seen_variants: set[Path] = set()
+    for pattern in ("intermediates/javac", "tmp/kotlin-classes"):
+        for parent_dir in root.rglob(pattern):
+            if set(parent_dir.parts) & _IGNORE_PARTS:
+                continue
+            if not parent_dir.is_dir():
+                continue
+            # parent_dir is like app/build/intermediates/javac
+            # module is the directory containing build/ — up 3 levels
+            module_dir = parent_dir.parent.parent.parent
+            module_name = module_dir.name if module_dir != root else root.name
+            for variant in parent_dir.iterdir():
+                if variant.is_dir() and variant not in seen_variants:
+                    seen_variants.add(variant)
+                    items.append((variant, module_name))
     return items
 
 
@@ -45,14 +52,15 @@ def bytecode_hierarchy(project_root: str | Path) -> tuple[dict[str, str | None],
             except Exception:
                 continue
             full_name: str = cls.get("class", "")
-            name = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
+            raw = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
+            name = raw.split("$")[-1]
             if name in seen:
                 continue
             seen.add(name)
             class_module[name] = module_name
             super_full: str = cls.get("super", "") or ""
             if super_full and "." in super_full:
-                hierarchy[name] = super_full.rsplit(".", 1)[-1]
+                hierarchy[name] = super_full.rsplit(".", 1)[-1].split("$")[-1]
             else:
                 hierarchy[name] = super_full or None
     return hierarchy, class_module
