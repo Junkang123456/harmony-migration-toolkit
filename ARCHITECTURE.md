@@ -213,16 +213,16 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 
 **输出**：`fragments.json`
 
-12 种挂载模式：FragmentTransaction.replace/add（正则）、ktx 泛型事务 `add<T>()`/`replace<T>()`（类作为类型参数，含 `commit { add<T>(...) }` 内的无接收者裸调用）、ViewPager Adapter、XML `<fragment>` 标签 + `FragmentContainerView android:name=`（静态挂载，等价于 `<fragment>`；排除 `NavHostFragment`）、Navigation Component 导航图 `res/navigation/*.xml` 的 `<fragment>`/`<dialog>` 目的地、AST 类声明、AST FragmentTransaction、AST loadFragment/showFragment、AST `.show()`（DialogFragment）、AST switch-case 工厂、Fragment 实例化上下文（含 `when` 箭头工厂 `-> XFragment()` / `-> X.newInstance()`、以及赋值/return/传参位置的 `X.newInstance(...)`）。
+13 种挂载模式：FragmentTransaction.replace/add（正则）、ktx 泛型事务 `add<T>()`/`replace<T>()`（类作为类型参数，含 `commit { add<T>(...) }` 内的无接收者裸调用）、ViewPager Adapter、XML `<fragment>` 标签 + `FragmentContainerView android:name=`（静态挂载，等价于 `<fragment>`；排除 `NavHostFragment`）、Navigation Component 导航图 `res/navigation/*.xml` 的 `<fragment>`/`<dialog>` 目的地、全屏对话框内容绑定 `FullScreenDialogFragment.Builder.setContent(X::class.java / X.class, …)`（类字面量即被托管的 Fragment）、AST 类声明、AST FragmentTransaction、AST loadFragment/showFragment、AST `.show()`（DialogFragment，接收者容忍 `X\n  .newInstance(..)\n  .show(fm)` 跨行链式）、AST switch-case 工厂、Fragment 实例化上下文（含 `when` 箭头工厂 `-> XFragment()` / `-> X.newInstance()`、以及赋值/return/传参位置的 `X.newInstance(...)`）。
 
-`_resolve_fragment_arg()` 追踪数据流确定实际 Fragment 类：直接类名 → `new Xxx()` → `Xxx.newInstance()` → 变量赋值 → 方法返回值。
+`_resolve_fragment_arg()` 追踪数据流确定实际 Fragment 类：直接类名 → `new Xxx()` → `Xxx.newInstance()` → 变量赋值 → 方法返回值。变量赋值优先读**显式类型标注**：`val f: XFragment = newInstance(...)` 的 RHS 常是静态导入的裸 `newInstance(...)`（无类前缀）追不到，但标注 `: XFragment` 直接确定类，无需推断。
 
 **类名门槛 `_is_fragment_name()`**：正则模式（如 `.show()` 接收者、`X.newInstance()`）以子串 `Fragment in name` 兜底放行候选类，但这会误纳两类「含 Fragment 却非 Fragment」的名字——框架基础设施（`getSupportFragmentManager()` → `SupportFragmentManager`、`FragmentStateAdapter` 子类 → `*FragmentAdapter`、`*FragmentTransaction`/`*FragmentActivity`）与小写工厂方法名（`createDetailFragmentForNote`）。两条确定性收紧滤除它们：(1) 首字母必须大写（类名约定，排除方法名）；(2) 排除 `FragmentManager`/`FragmentTransaction`/`FragmentActivity`/`*FragmentAdapter` 等基础设施后缀。这些是 Android 命名约定，不针对单一仓库。误报不影响 `attached/needs_host` 覆盖率（它们本就不在 AST 声明集合里），但会虚增挂载点计数并生成指向不存在节点的 containment 边——收紧后这些假边消失。
 
 **宿主覆盖口径**：抽象基类（作为另一 Fragment 的父类、自身未被直接挂载）通过子类挂载，不需要自己的宿主，从 orphan 分母中剔除（`coverage.base_class_count`）。覆盖率 = `attached_fragment_count / needs_host_count`，`needs_host = 声明总数 − 抽象基类`。
 
 覆盖率（AntennaPod）：84 个声明 Fragment 中 79 个找到宿主（94%）。
-覆盖率（WordPress）：声明 187，抽象基类 13，需宿主 174，已挂载 163（94%）；剩余 11 个 orphan 为两段式 `f = X.newInstance(); f.show()` 弹窗、自定义挂载 helper（如 `replaceFragment(X())`）、`setContent(X::class.java)` 导航构建器、`else X()` 裸工厂等跨语句/跨过程写法，超出单文件正则+数据流范围。
+覆盖率（WordPress）：声明 187，抽象基类 13，需宿主 174，已挂载 168（97%）；剩余 6 个 orphan 为自定义挂载 helper（`replaceFragment(X())` / `slideInFragment(new X())`，事务在 helper 体内、与类名解耦）、`showFragment(TAG){ X.newInstance() }` 工厂 lambda、`else X()` 裸构造工厂、以及只声明 `newInstance()` 工厂而 app 侧无静态挂载点（由外层容器/库内自管，如 `EditPostPublishSettingsFragment`、`LinkDialogFragment`）。前几类需自动发现自定义 helper（跨过程），后两类属语义上正确的 orphan，强挂即造边。
 
 ### 5.8b 容器边链接 — `extractors/containment_linker.py`
 

@@ -47,6 +47,16 @@ _FRAGMENT_TX_REIFIED_RE = re.compile(
     re.MULTILINE,
 )
 
+# Pattern 1c: full-screen-dialog content binding —
+# `FullScreenDialogFragment.Builder(ctx).setContent(SomeFragment::class.java, bundle)`
+# (Kotlin) / `.setContent(SomeFragment.class, bundle)` (Java). The class literal
+# passed to setContent is the fragment hosted inside the dialog, so it is a real
+# mount; `_is_fragment_name` gates out non-fragment class literals.
+_SETCONTENT_CLASS_RE = re.compile(
+    r'\.setContent\s*\(\s*([A-Z]\w*)\s*(?:::\s*class\s*\.\s*java|::\s*class|\.\s*class)\b',
+    re.MULTILINE,
+)
+
 # Pattern 2: Fragment adapter classes
 _FRAGMENT_ADAPTER_CLASS_RE = re.compile(
     r'class\s+(\w+)\s*[^{]*(?:extends|:)\s*'
@@ -70,6 +80,7 @@ _ATTACH_PRIORITY = {
     "ViewPager2+FragmentStateAdapter": 1,
     "nav_graph_destination": 2,
     "xml_fragment_tag": 2,
+    "fullscreen_dialog_content": 2,
     "class_declaration": 3,
 }
 
@@ -249,8 +260,17 @@ def _trace_variable_to_fragment(source: bytes, var_name: str, scope_node, hierar
     for node in _ast_walk(scope_node):
         if node.kind() == "property_declaration":
             text = _ast_node_text(source, node)
-            m = re.match(r'(?:val|var)\s+' + re.escape(var_name) + r'\s*(?::\s*\w+)?\s*=', text)
+            m = re.match(r'(?:val|var)\s+' + re.escape(var_name) + r'\s*(?::\s*([\w.]+))?\s*=', text)
             if m:
+                # An explicit type annotation `val f: XFragment = newInstance(...)`
+                # names the fragment directly. Prefer it: the RHS is often a bare
+                # `newInstance(...)` (statically-imported companion) with no class
+                # prefix, which the RHS parsing below cannot resolve.
+                type_ann = m.group(1)
+                if type_ann:
+                    type_cls = type_ann.rsplit(".", 1)[-1]
+                    if _is_fragment_class(type_cls, hierarchy):
+                        return type_cls
                 eq_pos = text.find("=")
                 if eq_pos >= 0:
                     init = text[eq_pos + 1:].strip()
@@ -578,8 +598,12 @@ def _extract_show_receiver_class(source: bytes, show_node, hierarchy) -> str | N
         if _is_fragment_class(cls, hierarchy):
             return cls
 
-    # SomeDialog.newInstance(...).show(...)
-    m = re.search(r'(\w+)\.newInstance\s*\(', text)
+    # SomeDialog.newInstance(...).show(...) — tolerate a newline/whitespace between
+    # the class and `.newInstance`, as in the common fluent form
+    #   X
+    #     .newInstance(...)
+    #     .show(fm, TAG)
+    m = re.search(r'(\w+)\s*\.\s*newInstance\s*\(', text)
     if m:
         cls = m.group(1)
         if _is_fragment_class(cls, hierarchy):
@@ -868,6 +892,23 @@ def run(project_root: str, dep_roots: list[str] | None = None,
                 "class": frag_class,
                 "container_id": container_id,
                 "attach_method": f"FragmentTransaction.{method}",
+                "host_class": host,
+                "host_file": rel_path,
+                "line": line,
+                "source_file": rel_path,
+            })
+
+        # Pattern 1c: FullScreenDialogFragment.Builder.setContent(X::class.java)
+        for m in _SETCONTENT_CLASS_RE.finditer(content):
+            frag_class = m.group(1)
+            if not _is_fragment_name(frag_class):
+                continue
+            line = _line_number(content, m.start())
+            host = _find_host_class(content, line - 1)
+            fragments.append({
+                "class": frag_class,
+                "container_id": "",
+                "attach_method": "fullscreen_dialog_content",
                 "host_class": host,
                 "host_file": rel_path,
                 "line": line,
