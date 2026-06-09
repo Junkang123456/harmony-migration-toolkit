@@ -217,6 +217,8 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 
 `_resolve_fragment_arg()` 追踪数据流确定实际 Fragment 类：直接类名 → `new Xxx()` → `Xxx.newInstance()` → 变量赋值 → 方法返回值。
 
+**类名门槛 `_is_fragment_name()`**：正则模式（如 `.show()` 接收者、`X.newInstance()`）以子串 `Fragment in name` 兜底放行候选类，但这会误纳两类「含 Fragment 却非 Fragment」的名字——框架基础设施（`getSupportFragmentManager()` → `SupportFragmentManager`、`FragmentStateAdapter` 子类 → `*FragmentAdapter`、`*FragmentTransaction`/`*FragmentActivity`）与小写工厂方法名（`createDetailFragmentForNote`）。两条确定性收紧滤除它们：(1) 首字母必须大写（类名约定，排除方法名）；(2) 排除 `FragmentManager`/`FragmentTransaction`/`FragmentActivity`/`*FragmentAdapter` 等基础设施后缀。这些是 Android 命名约定，不针对单一仓库。误报不影响 `attached/needs_host` 覆盖率（它们本就不在 AST 声明集合里），但会虚增挂载点计数并生成指向不存在节点的 containment 边——收紧后这些假边消失。
+
 **宿主覆盖口径**：抽象基类（作为另一 Fragment 的父类、自身未被直接挂载）通过子类挂载，不需要自己的宿主，从 orphan 分母中剔除（`coverage.base_class_count`）。覆盖率 = `attached_fragment_count / needs_host_count`，`needs_host = 声明总数 − 抽象基类`。
 
 覆盖率（AntennaPod）：84 个声明 Fragment 中 79 个找到宿主（94%）。

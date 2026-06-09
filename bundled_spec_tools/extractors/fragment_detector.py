@@ -95,7 +95,26 @@ def _line_number(content: str, match_start: int) -> int:
     return content[:match_start].count("\n") + 1
 
 
+# Names that contain "Fragment" but are framework infrastructure, not Fragment
+# subclasses. The loose `"Fragment" in name` substring check below would otherwise
+# admit them: getSupportFragmentManager() -> "SupportFragmentManager", a
+# FragmentStateAdapter subclass -> "...FragmentAdapter", etc. These end up as fake
+# mount records and as containment edges pointing at nodes that do not exist.
+_NON_FRAGMENT_SUFFIXES = (
+    "FragmentManager", "FragmentTransaction", "FragmentActivity",
+    "FragmentAdapter", "FragmentPagerAdapter", "FragmentStateAdapter",
+    "FragmentStatePagerAdapter",
+)
+
+
 def _is_fragment_name(name: str) -> bool:
+    # Must be a class name, not a method: class names start uppercase. This filters
+    # lowercase factory methods such as createDetailFragmentForNote().
+    if not name or not name[0].isupper():
+        return False
+    # Framework infrastructure that merely contains the substring "Fragment".
+    if name.endswith(_NON_FRAGMENT_SUFFIXES):
+        return False
     fragment_suffixes = ("Fragment", "BottomSheet", "DialogFragment",
                          "BottomSheetDialogFragment", "PreferenceFragment")
     return any(name.endswith(s) for s in fragment_suffixes) or "Fragment" in name
