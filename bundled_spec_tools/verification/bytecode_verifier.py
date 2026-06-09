@@ -6,7 +6,8 @@ from extractors.class_parser import parse_class
 
 _ANDROID_FRAGMENT_BASES_SHORT = {
     "Fragment", "DialogFragment", "BottomSheetDialogFragment",
-    "PreferenceFragmentCompat", "ListFragment",
+    "PreferenceFragmentCompat", "PreferenceFragment",
+    "PreferenceDialogFragmentCompat", "ListFragment",
     "MapFragment", "SupportMapFragment",
     "AppCompatDialogFragment",
 }
@@ -20,18 +21,44 @@ _ANDROID_ACTIVITY_BASES_SHORT = {
 _IGNORE_PARTS = {".gradle", ".git", ".idea", ".dep_cache"}
 
 
+# Dagger-Hilt generates an intermediate base class `Hilt_<OriginalName>` between a
+# source @AndroidEntryPoint Activity/Fragment and its framework superclass. These
+# synthetic classes exist only in bytecode (never in source), so they always appear
+# as bytecode_only and would otherwise read as hundreds of false "AST misses". The
+# `Hilt_` prefix is a fixed Hilt naming convention, not project-specific. We split
+# them into their own bucket rather than dropping them, so the exclusion stays
+# auditable and a genuine miss is never hidden by it.
+def _is_synthetic_generated(name: str) -> bool:
+    return name.startswith("Hilt_")
+
+
+# Compiled-class output layouts vary by AGP/Kotlin version. `javac` holds Java
+# classes; Kotlin classes land in `tmp/kotlin-classes` (older AGP) or
+# `intermediates/built_in_kotlinc` (newer AGP's built-in Kotlin compilation);
+# `intermediates/classes` is the per-variant merged Java+Kotlin set. Scanning all
+# of them — and deduping class names downstream — keeps the verifier from silently
+# missing every Kotlin Fragment when only the old two patterns exist. The `build/`
+# anchor pins these to a module build dir so unrelated `classes/` dirs are ignored.
+_CLASS_DIR_PATTERNS = (
+    "build/intermediates/javac",
+    "build/intermediates/classes",
+    "build/intermediates/built_in_kotlinc",
+    "build/tmp/kotlin-classes",
+)
+
+
 def _class_dirs(project_root: str | Path) -> list[tuple[Path, str]]:
     root = Path(project_root)
     items: list[tuple[Path, str]] = []
     seen_variants: set[Path] = set()
-    for pattern in ("intermediates/javac", "tmp/kotlin-classes"):
+    for pattern in _CLASS_DIR_PATTERNS:
         for parent_dir in root.rglob(pattern):
             if set(parent_dir.parts) & _IGNORE_PARTS:
                 continue
             if not parent_dir.is_dir():
                 continue
-            # parent_dir is like app/build/intermediates/javac
-            # module is the directory containing build/ — up 3 levels
+            # parent_dir is like app/build/intermediates/javac; the module is the
+            # directory containing build/, three levels above parent_dir.
             module_dir = parent_dir.parent.parent.parent
             module_name = module_dir.name if module_dir != root else root.name
             for variant in parent_dir.iterdir():
@@ -142,8 +169,12 @@ def bytecode_verifier(
 
     def _diff_with_diagnostics(ast_set, bc_set, label):
         ast_only = sorted(ast_set - bc_set)
-        bc_only = sorted(bc_set - ast_set)
+        bc_only_all = sorted(bc_set - ast_set)
         matched = sorted(ast_set & bc_set)
+        # Hilt-generated intermediate bases are bytecode-only by construction; keep
+        # them out of the actionable miss list but record them for auditability.
+        bc_only = [n for n in bc_only_all if not _is_synthetic_generated(n)]
+        synthetic_excluded = [n for n in bc_only_all if _is_synthetic_generated(n)]
         ast_only_details = []
         for name in ast_only:
             bc_type = _resolve_bytecode_base(name, bc_hierarchy) if name in bc_hierarchy else "not_in_hierarchy"
@@ -173,6 +204,8 @@ def bytecode_verifier(
             "ast_only_details": ast_only_details,
             "bytecode_only": bc_only,
             "bytecode_only_details": bc_only_details,
+            "synthetic_excluded": synthetic_excluded,
+            "synthetic_excluded_count": len(synthetic_excluded),
             "matched": matched,
             "matched_details": matched_details,
         }

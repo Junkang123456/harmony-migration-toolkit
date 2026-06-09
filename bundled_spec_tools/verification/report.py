@@ -131,12 +131,15 @@ def print_verification_report(report: dict) -> None:
                 bc_only = diff.get("bytecode_only", [])
                 ast_only = diff.get("ast_only", [])
                 matched = diff.get("matched", [])
+                synthetic = diff.get("synthetic_excluded_count", 0)
                 print(f"      {diff_label} AST vs Bytecode:")
                 print(f"        matched: {len(matched)}")
                 if ast_only:
                     print(f"        AST only ({len(ast_only)}): {', '.join(ast_only[:10])}")
                 if bc_only:
                     print(f"        Bytecode only ({len(bc_only)}): {', '.join(bc_only[:10])}")
+                if synthetic:
+                    print(f"        excluded (Hilt synthetic bases): {synthetic}")
 
     if summary["issues"]:
         print("\n  ── Issues ──")

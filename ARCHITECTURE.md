@@ -349,6 +349,14 @@ tree-sitter Kotlin/Java 统一入口（依赖 `tree_sitter_language_pack`，缺�
 - `bytecode_verifier.py` — 从字节码继承链验证 Fragment/Activity 分类
 - `report.py` — 汇总 `verification_report.json`
 
+**字节码类目录扫描（`_class_dirs`）**：编译产物布局随 AGP/Kotlin 版本变化。`_CLASS_DIR_PATTERNS` 同时扫 `build/intermediates/javac`（Java）、`build/intermediates/built_in_kotlinc`（新版 AGP 内建 Kotlin 编译）、`build/tmp/kotlin-classes`（旧版 Kotlin）、`build/intermediates/classes`（按 variant 合并的 Java+Kotlin 全集），`bytecode_hierarchy()` 用短名 `seen` 集跨目录去重。只扫旧两项（javac + kotlin-classes）会在新版 AGP 下漏掉全部 Kotlin 类——WordPress 实测 Kotlin fragment 几乎全在 `built_in_kotlinc`/`classes`，补全后字节码可用类从 ~5791 升到 9909。
+
+**基类清单**：`_ANDROID_FRAGMENT_BASES_SHORT` 含 `PreferenceFragment` 与 `PreferenceFragmentCompat`（两者都是真实 Fragment 基类，旧清单只有后者，导致 Preference 系 fragment 被误判 unknown）。
+
+**Hilt 合成基类分流**：Dagger-Hilt 在 `@AndroidEntryPoint` 的源类与框架父类之间生成中间基类 `Hilt_<原名>`，只存在于字节码、源码无对应，否则会在 `bytecode_only` 里表现为上百个假“AST 漏报”。`_is_synthetic_generated()` 按固定前缀 `Hilt_`（跨项目通用约定）识别，diff 时移入独立 `synthetic_excluded` 桶并计数，不直接丢弃以保审计可见、不掩盖真实漏报。WordPress 实测分流 fragment 62 + activity 87。
+
+**验证基线（WordPress，jetpackDebug，已编译）**：字节码类 9909；Fragment matched 186/187（99.5%），Activity matched 136/138（98.6%）。剩余分歧均已定位且非 verifier 缺陷：5 个 manifest activity 为第三方库（Zendesk / UCrop）仅在 Manifest 声明、源码不在仓库；3 个 ast_only 源码存在但未编译进当前 variant；1 个 bytecode_only（`LoginPrologueRevampedFragment`）源码在 flavor 源集真实存在但 AST hierarchy 未解析到——AST flavor 源集覆盖的真实信号，待单独跟进。
+
 ### 5.15 非 UI 组件归类 — `extractors/non_ui_components.py`
 
 **为何需要**：迁移目标是把 Android app 翻成鸿蒙 app，不是硬把行为挂到屏幕上提覆盖率。orphan chain（§8.2）里大多数 handler 类**本就不是屏幕**——后台 `<service>`、桌面 widget `<receiver>`、传感器/滚动监听器、播放基础设施。它们是真实功能、需要迁移，但不属于任何 screen spec。本模块把这些 orphan 行为按 owning class 聚合成「非 UI 组件」，并给出鸿蒙能力映射提示，作为它们的归处。
