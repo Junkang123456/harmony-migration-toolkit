@@ -2,13 +2,69 @@
 
 Deterministic **Android → HarmonyOS migration IR** pipeline. Stage 0 runs the **bundled** static analyzer under [`bundled_spec_tools/`](bundled_spec_tools/) (vendored from the former `spec-tools-for-opencode` tree), then emits one agent-consumable migration bundle plus reproducible intermediate artifacts.
 
-Non-deterministic work (**LLM / human**) is restricted to `gap_items` and optional `llm_out/` — see [prompts/gap_prompt.md](prompts/gap_prompt.md).
+## Project structure
 
-## Design: Feature Tree and Viewer
-
-End-to-end design for the planned **feature tree IR** (screen / UI / behavior / implementation anchors), **screen–screen edges**, **Harmony projection**, and **interactive HTML viewer** — implementation checklist included:
-
-[docs/FEATURE_TREE_AND_VIEWER_DESIGN.md](docs/FEATURE_TREE_AND_VIEWER_DESIGN.md)
+```
+harmony-migration-toolkit/
+├── pipeline.py                  # entry point — orchestrates all stages
+├── ARCHITECTURE.md              # bundled_spec_tools architecture reference (field details, algorithms, coverage data)
+├── requirements.txt             # Python dependencies
+├── stages/                      # stage implementations
+│   ├── stage0_run_spec_tools.py # Stage 0 — invoke bundled static analyzer
+│   ├── stage1_normalize.py      # Stage 1 — normalize facts into single JSON
+│   ├── stage2_framework_map.py  # Stage 2 — Android API → HarmonyOS mapping
+│   ├── stage3_architecture.py   # Stage 3 — projected HarmonyOS architecture
+│   ├── stage4_emit_scaffold.py  # Stage 4 — scaffold plan emission
+│   ├── build_android_facts.py   # facts model builder
+│   ├── build_feature_tree.py    # feature tree construction
+│   ├── build_framework_map.py   # framework mapping logic
+│   ├── build_harmony_arch.py    # harmony architecture projection
+│   ├── export_agent_bundle.py   # Stage 7 — final agent bundle export
+│   ├── export_feature_tree_view.py  # Stage 6 — HTML viewer export
+│   ├── feature_taxonomy_miner.py    # automatic feature taxonomy mining
+│   ├── feature_tree_taxonomy.py     # taxonomy application
+│   └── feature_tree_reports.py      # evidence & verification reports
+├── bundled_spec_tools/          # vendored Stage 0 static analyzer
+│   ├── main.py                  # standalone entry: python main.py <android_root>
+│   ├── generate_specs.py        # per-screen spec generation
+│   ├── extractors/              # all source/XML/AST extractors
+│   │   ├── xml_extractor.py         # layout XML parsing
+│   │   ├── source_extractor.py      # Kotlin/Java source scanning
+│   │   ├── class_parser.py          # class/method symbol extraction
+│   │   ├── navigation_extractor.py  # screen navigation detection
+│   │   ├── fragment_detector.py     # Fragment host/attachment detection
+│   │   ├── behavior_chain_extractor.py  # event→handler→effect chains
+│   │   ├── dynamic_ui_extractor.py  # programmatic view detection
+│   │   ├── function_graph_extractor.py  # call graph construction
+│   │   ├── bytecode_navigation.py   # .class bytecode nav analysis
+│   │   ├── ground_truth_builder.py  # XML ↔ behavior join
+│   │   ├── non_ui_components.py     # services/receivers/widgets
+│   │   ├── app_model_builder.py     # graph-shaped app model assembly
+│   │   ├── ui_dag_assembler.py      # UI DAG from launcher screen
+│   │   └── ...                      # additional extraction modules
+│   └── verification/            # post-scan verification
+│       ├── bytecode_verifier.py     # verify navigation via bytecode
+│       ├── layout_verifier.py       # verify layout completeness
+│       ├── manifest_verifier.py     # verify manifest coverage
+│       └── report.py                # verification report assembly
+├── schemas/                     # JSON Schema Draft 2020-12
+│   ├── android_facts.v1.schema.json
+│   ├── framework_map.v1.schema.json
+│   ├── harmony_arch.v1.schema.json
+│   ├── feature_tree.v1.schema.json
+│   └── agent_bundle.v1.schema.json
+├── data/
+│   └── framework_map/rules.yaml # Android → HarmonyOS mapping rules
+├── docs/
+│   ├── PIPELINE_OUTPUTS.md      # directory-level output index
+│   ├── FEATURE_TREE_AND_VIEWER_DESIGN.md  # feature tree IR design
+│   └── 工具说明.md               # plain-language tool overview (Chinese)
+├── tests/                       # pytest test suite
+│   └── test_pipeline.py
+└── fixtures/                    # test fixtures
+    ├── minimal_android/         # minimal Android project for integration tests
+    └── minimal_facts/           # pre-built facts for unit tests
+```
 
 ## Requirements
 
@@ -79,17 +135,26 @@ Stage 5 groups screens into logical `feature:*` nodes with deterministic automat
 
 Stage 5 writes `<output>/intermediate/5_feature_tree/taxonomy_report.json`, including generated feature counts, matched screen counts, and any remaining `unmatched_screens`.
 
+## Documentation
+
+| Document | Content |
+|----------|---------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Technical reference for `bundled_spec_tools` — field definitions, algorithms, coverage data |
+| [docs/工具说明.md](docs/工具说明.md) | Plain-language overview of the tool: what it does, how to use it, what it outputs (Chinese) |
+| [docs/PIPELINE_OUTPUTS.md](docs/PIPELINE_OUTPUTS.md) | Directory-level index of all pipeline output files |
+| [docs/FEATURE_TREE_AND_VIEWER_DESIGN.md](docs/FEATURE_TREE_AND_VIEWER_DESIGN.md) | Design for the feature tree IR, screen edges, Harmony projection, and HTML viewer |
+
 ## LLM boundary (contract)
 
 **Deterministic tools own:** merging XML + source facts (via `bundled_spec_tools/`), Gradle/manifest parsing, framework **mapping tables** under [data/framework_map/rules.yaml](data/framework_map/rules.yaml), IR JSON and schema validation.
 
-**LLM may assist:** filling `implementation_notes`, ArkTS/ArkUI drafts, Compose-heavy UI, JNI/NAPI ports — only via structured outputs described in [prompts/gap_prompt.md](prompts/gap_prompt.md).
+**LLM may assist:** filling `implementation_notes`, ArkTS/ArkUI drafts, Compose-heavy UI, JNI/NAPI ports — only via structured outputs with schemas defined in [schemas/](schemas/).
 
 **LLM must not:** silently change navigation graphs, invent screens, or override `rules_version` mappings without a human-reviewed table change.
 
 ## Schemas
 
-JSON Schema Draft 2020-12 under [schemas/](schemas/): `android_facts.v1.schema.json`, `framework_map.v1.schema.json`, `harmony_arch.v1.schema.json`, `feature_tree.v1.schema.json`.
+JSON Schema Draft 2020-12 under [schemas/](schemas/): `android_facts.v1.schema.json`, `framework_map.v1.schema.json`, `harmony_arch.v1.schema.json`, `feature_tree.v1.schema.json`, `agent_bundle.v1.schema.json`.
 
 ## Tests
 
