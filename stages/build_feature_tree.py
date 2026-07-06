@@ -418,11 +418,23 @@ def build_feature_tree(
     # We surface that trigger context as reach_paths on the screen node so
     # downstream consumers (feature tree, agent bundle) can see "how do I get to
     # this dialog?" instead of seeing an orphan node.
+    #
+    # Note: screen_hosts keys are the host()-processed names (e.g.
+    # HomeActivity$showCampaignDialog, without the final $1), but nav graph
+    # edges use the full raw names.  We build a reverse map from processed →
+    # raw to bridge the two.
     edges_by_to: dict[str, list[dict[str, Any]]] = {}
     for edge in nav_edges:
         t = str(edge.get("to") or "")
         if t and t != str(edge.get("from") or ""):
             edges_by_to.setdefault(t, []).append(edge)
+
+    # processed host-name → set of raw nav names that map to it
+    raw_via_processed: dict[str, list[str]] = {}
+    for raw_name in list(nav_nodes.keys()):
+        ph = host(raw_name)
+        if ph != raw_name:
+            raw_via_processed.setdefault(ph, []).append(raw_name)
 
     def _host_label(cls: str) -> str:
         # Returns a short human-readable label from a class name
@@ -478,34 +490,35 @@ def build_feature_tree(
         # tree carries the full reach context instead of an orphan node.
         rps: list[dict[str, Any]] = []
         if "$" in h:
-            inbound = edges_by_to.get(h, [])
-            for edge in inbound:
-                from_cls = str(edge.get("from") or "")
-                rp = {
-                    "from_class": from_cls,
-                    "trigger": _trigger_label(edge),
-                    "via": str(edge.get("via") or ""),
-                    "display": f"{_host_label(from_cls)} > {_trigger_label(edge)}",
-                }
-                if edge.get("line"):
-                    rp["line"] = int(edge.get("line"))
-                rps.append(rp)
+            # screen_hosts keys are host()-processed (e.g.
+            # HomeActivity$showCampaignDialog, without the terminal $1).
+            # Nav edges use the full raw name.  Bridge via the reverse map.
+            lookup_names = [h] + raw_via_processed.get(h, [])
+            for raw_name in lookup_names:
+                for edge in edges_by_to.get(raw_name, []):
+                    from_cls = str(edge.get("from") or "")
+                    rp = {
+                        "from_class": from_cls,
+                        "trigger": _trigger_label(edge),
+                        "via": str(edge.get("via") or ""),
+                        "display": f"{_host_label(from_cls)} > {_trigger_label(edge)}",
+                    }
+                    if edge.get("line"):
+                        rp["line"] = int(edge.get("line"))
+                    rps.append(rp)
 
-        # Also pull reach paths from enumerated paths that end at this screen.
-        # The enumerator already emits Home > Limitcampaign >
-        # HomeActivity$showCampaignDialog$1 chains; surfacing them on the
-        # screen node links the two layers so downstream doesn't need to
-        # re-derive the connection.
-        for ep in enumerated_paths:
-            leaf = str(ep.get("leaf_class") or "")
-            if leaf == h and "$" in h:
-                rps.append({
-                    "from_class": "",
-                    "trigger": "",
-                    "via": "enumerated",
-                    "display": str(ep.get("path_display") or ""),
-                    "depth": int(ep.get("depth") or 0),
-                })
+                # Also pull reach paths from enumerated paths that end at any
+                # raw-name variant of this screen.
+                for ep in enumerated_paths:
+                    leaf = str(ep.get("leaf_class") or "")
+                    if leaf == raw_name:
+                        rps.append({
+                            "from_class": "",
+                            "trigger": "",
+                            "via": "enumerated",
+                            "display": str(ep.get("path_display") or ""),
+                            "depth": int(ep.get("depth") or 0),
+                        })
 
         if rps:
             node["reach_paths"] = rps
