@@ -542,6 +542,32 @@ def main():
         json.dumps(report_rows, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
+    # Isolated root nodes (0 inbound nav edges) that hold anonymous dialogs or
+    # fragment children.  They are unreachable from the launcher via pure nav-graph
+    # traversal, but their outbound edges carry useful trigger→target chains
+    # (e.g. HomeActivity → showCampaignDialog → HomeActivity$showCampaignDialog$1).
+    def _isolated_roots_with_useful_edges(nav_data: dict) -> list[str]:
+        incoming: dict[str, int] = {}
+        for e in nav_data.get("edges", []):
+            if e.get("from") != e.get("to"):
+                incoming[str(e.get("to") or "")] = incoming.get(str(e.get("to") or ""), 0) + 1
+        roots = []
+        for name in sorted(nav_data.get("nodes", {})):
+            if incoming.get(name, 0) == 0 and name != launcher_class:
+                # Only include roots that have outbound edges to anonymous children or
+                # fragment destinations — pure leaf roots add nothing to enumeration.
+                has_useful = False
+                for e in nav_data.get("edges", []):
+                    if e.get("from") == name and e.get("from") != e.get("to"):
+                        if "$" in str(e.get("to", "")) or str(e.get("via", "")) in (
+                            "fragment_host", "custom_view_host"
+                        ):
+                            has_useful = True
+                            break
+                if has_useful:
+                    roots.append(name)
+        return roots
+
     enum_payload = {
         "schema_version": "1.0",
         "start_class": launcher_class,
@@ -553,6 +579,7 @@ def main():
             start_layout=launcher_layout,
             max_depth=8,
             max_paths=800,
+            extra_roots=_isolated_roots_with_useful_edges(nav),
         ),
     }
     enum_payload["path_count"] = len(enum_payload["paths"])

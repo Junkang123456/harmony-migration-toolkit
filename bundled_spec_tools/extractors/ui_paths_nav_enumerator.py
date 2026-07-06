@@ -41,10 +41,18 @@ def enumerate_nav_paths(
     start_layout: str = "",
     max_depth: int = 8,
     max_paths: int = 800,
+    extra_roots: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    DFS over navigation edges from start_class. Emits path prefixes with at least
-    two display segments (screen + one step). Cycles on the current stack are skipped.
+    DFS over navigation edges from start_class (and optional extra_roots).
+    Emits path prefixes with at least two display segments (screen + one step).
+    Cycles on the current stack are skipped.
+
+    extra_roots are typically isolated root nodes (0 inbound nav edges) that
+    hold anonymous dialogs or fragment children — they would never be reached
+    from the launcher via pure nav graph traversal but their outbound edges
+    carry useful trigger→target chains (e.g. HomeActivity → showCampaignDialog
+    → HomeActivity$showCampaignDialog$1).
     """
     edges_by_from: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for e in nav.get("edges") or []:
@@ -59,19 +67,25 @@ def enumerate_nav_paths(
         )
 
     out: list[dict[str, Any]] = []
-    root_label = _screen_label(start_class, start_layout)
+    seen_displays: set[str] = set()
+
+    def _add(path_display: str, cur_class: str, stack_depth: int) -> None:
+        if path_display in seen_displays or len(out) >= max_paths:
+            return
+        seen_displays.add(path_display)
+        out.append(
+            {
+                "path_display": path_display,
+                "depth": stack_depth,
+                "leaf_class": cur_class,
+            }
+        )
 
     def dfs(cur_class: str, stack: list[str], parts: list[str]) -> None:
         if len(out) >= max_paths:
             return
         if len(parts) >= 2:
-            out.append(
-                {
-                    "path_display": " > ".join(parts),
-                    "depth": len(stack),
-                    "leaf_class": cur_class,
-                }
-            )
+            _add(" > ".join(parts), cur_class, len(stack))
         if len(stack) >= max_depth:
             return
         for edge in edges_by_from.get(cur_class, []):
@@ -83,6 +97,21 @@ def enumerate_nav_paths(
             seg = [lbl, dest_lbl] if lbl else [dest_lbl]
             dfs(dest, stack + [dest], parts + seg)
 
+    # ── Main root ──────────────────────────────────────────────────────────
+    root_label = _screen_label(start_class, start_layout)
     dfs(start_class, [start_class], [root_label])
+
+    # ── Extra roots: isolated nodes with interesting outbound edges ────────
+    # These are not reachable from the launcher but hold anonymous dialog /
+    # fragment-container edges that the DFS should traverse.
+    if extra_roots:
+        covered_roots = {start_class}
+        for root_class in extra_roots:
+            if root_class in covered_roots:
+                continue
+            covered_roots.add(root_class)
+            root_lbl = _screen_label(root_class, "")
+            dfs(root_class, [root_class], [root_lbl])
+
     out.sort(key=lambda r: r.get("path_display", ""))
     return out
