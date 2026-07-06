@@ -256,6 +256,9 @@ def build_feature_tree(
     effect_paths = _iter_effect_paths(load_json(effect_path)) if effect_path.is_file() else []
     chains_path = facts_dir / "behavior_chains.json"
     behavior_chains = list((load_json(chains_path) or {}).get("behavior_chains") or []) if chains_path.is_file() else []
+    enum_path = facts_dir / "ui_paths_enumerated.json"
+    enum_payload = load_json(enum_path) if enum_path.is_file() else {}
+    enumerated_paths: list[dict[str, Any]] = list(enum_payload.get("paths") or []) if isinstance(enum_payload, dict) else []
     function_symbols, call_edges, unresolved_calls = _load_function_symbols(facts_dir)
     symbols_for_file = _symbols_by_file(function_symbols)
 
@@ -408,6 +411,39 @@ def build_feature_tree(
             }
         )
 
+    # ── Build inbound edge index for anonymous-dialog reach_paths ───────────
+    # Anonymous inner-class dialogs ($showCampaignDialog$1) are not reachable
+    # via BFS from the launcher, but they have real trigger edges in the nav
+    # graph (e.g. HomeActivity –fn:showCampaignDialog→ HomeActivity$showCampaignDialog$1).
+    # We surface that trigger context as reach_paths on the screen node so
+    # downstream consumers (feature tree, agent bundle) can see "how do I get to
+    # this dialog?" instead of seeing an orphan node.
+    edges_by_to: dict[str, list[dict[str, Any]]] = {}
+    for edge in nav_edges:
+        t = str(edge.get("to") or "")
+        if t and t != str(edge.get("from") or ""):
+            edges_by_to.setdefault(t, []).append(edge)
+
+    def _host_label(cls: str) -> str:
+        # Returns a short human-readable label from a class name
+        for suffix in ("Activity", "Fragment", "Dialog"):
+            if cls.endswith(suffix) and cls != suffix:
+                return cls[: -len(suffix)]
+        return cls
+
+    def _trigger_label(edge: dict) -> str:
+        trigger = str(edge.get("trigger") or "")
+        if trigger.startswith("fn: "):
+            return trigger[4:].strip()
+        if trigger.startswith("fn:"):
+            return trigger[3:].strip()
+        if trigger.startswith("hosts fragment"):
+            return trigger.strip()
+        if trigger:
+            return trigger.strip()[:80]
+        via = str(edge.get("via") or "")
+        return via.strip() or "navigate"
+
     for h, meta in sorted(screen_hosts.items(), key=lambda x: x[0]):
         sid = f"screen:{h}"
         sk = meta.get("screen_kind") or "other"
@@ -434,6 +470,46 @@ def build_feature_tree(
                 prev = harm.get("gap_ref", "")
                 harm["gap_ref"] = (prev + "|" if prev else "") + "UI_COMPOSE_LOW_FIDELITY"
             node["projection"] = {"harmony": harm}
+
+        # ── reach_paths for anonymous / orphan dialogs ─────────────────────
+        # When a dialog is an inner class (contains $ in its name), the
+        # reach stack is often "host page → trigger function → dialog".
+        # Build that from the navigation graph's inbound edges so the fact
+        # tree carries the full reach context instead of an orphan node.
+        rps: list[dict[str, Any]] = []
+        if "$" in h:
+            inbound = edges_by_to.get(h, [])
+            for edge in inbound:
+                from_cls = str(edge.get("from") or "")
+                rp = {
+                    "from_class": from_cls,
+                    "trigger": _trigger_label(edge),
+                    "via": str(edge.get("via") or ""),
+                    "display": f"{_host_label(from_cls)} > {_trigger_label(edge)}",
+                }
+                if edge.get("line"):
+                    rp["line"] = int(edge.get("line"))
+                rps.append(rp)
+
+        # Also pull reach paths from enumerated paths that end at this screen.
+        # The enumerator already emits Home > Limitcampaign >
+        # HomeActivity$showCampaignDialog$1 chains; surfacing them on the
+        # screen node links the two layers so downstream doesn't need to
+        # re-derive the connection.
+        for ep in enumerated_paths:
+            leaf = str(ep.get("leaf_class") or "")
+            if leaf == h and "$" in h:
+                rps.append({
+                    "from_class": "",
+                    "trigger": "",
+                    "via": "enumerated",
+                    "display": str(ep.get("path_display") or ""),
+                    "depth": int(ep.get("depth") or 0),
+                })
+
+        if rps:
+            node["reach_paths"] = rps
+
         nodes.append(node)
 
     for fid in sorted(feature_ids_used):
