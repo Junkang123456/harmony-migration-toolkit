@@ -1172,6 +1172,16 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
             return trigger[7:].replace("_", " ").title(), "virtual"
         if trigger.startswith("click: ") or trigger.startswith("click "):
             return trigger.split(":", 1)[-1].strip().replace("_", " ").title(), "virtual"
+        if trigger.startswith("hosts fragment"):
+            # "hosts fragment (FragmentTransaction.replace)" → "Fragment [replace]"
+            import re as _re2
+            m = _re2.search(r"\((.+?)\)", trigger)
+            method = m.group(1) if m else ""
+            label = f"Fragment [{method}]" if method else "Fragment"
+            return label, "fragment"
+        if "embeds host view" in trigger:
+            # "layout xxx embeds host view" → "CustomView Host"
+            return "CustomView Host", "container"
         return trigger.replace("_", " ").title(), "virtual"
 
     def _edge_sort_key(edge: dict) -> tuple[int, int, str, str, int]:
@@ -1180,6 +1190,8 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
         trigger = str(edge.get("trigger", ""))
         type_rank = {
             "activity": 0,
+            "fragment": 0,       # container edge (fragment_host) — follow first
+            "container": 0,      # container edge (custom_view_host)
             "dialog": 1,
             "commons_dialog": 2,
             "external": 9,
@@ -1239,9 +1251,133 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
                 screen_stacks_by_class[dest] = cur_stack + [nav_action, _screen_segment(dest_layout, dest)]
                 queue.append(dest)
 
+    # ── Fill gaps after BFS ──────────────────────────────────────────────────
+    #
+    # BFS only reaches classes connected through navigation edges from the
+    # launcher.  Three classes of screens are left unstacked:
+    #   A. Anonymous dialogs (HomeActivity$showCampaignDialog$1) — their host
+    #      page (HomeActivity) is known but may itself be an isolated root.
+    #   B. Fragment / custom-view container destinations — these appear as
+    #      edge targets but may have no nav-graph node and no layout elements.
+    #   C. Fragment host roots — e.g. HomeActivity with 0 inbound nav edges.
+    #
+    # Correct order matters: first seed the lookup with BFS, then add isolated
+    # hosts (C), then recover container destinations (B), then walk the whole
+    # lookup to pull anonymous children (A) on top of the now-populated stack
+    # set.
+
+    screen_stacks_lookup: dict[str, list[dict]] = dict(screen_stacks_by_class)
+
+    # ── (Step 1) isolated fragment-hosting roots (C) ────────────────────────
+    # These root nodes have zero inbound navigation edges so BFS never reaches
+    # them, but they are essential as anchor stacks for both their fragment
+    # children (B) and their anonymous dialog children (A).
+    container_vias = {"fragment_host", "custom_view_host"}
+    for edge in nav_data.get("edges", []):
+        if str(edge.get("via") or "") not in container_vias:
+            continue
+        from_class = str(edge.get("from") or "")
+        if not from_class or from_class in screen_stacks_lookup:
+            continue
+        from_layout = class_to_layout.get(from_class) or _resolve_layout_from_class(from_class, nav_data)
+        screen_stacks_lookup[from_class] = [
+            app_root_seg,
+            runtime_root_seg,
+            _screen_segment(from_layout, from_class),
+        ]
+
+    # ── (Step 2) container-edge destinations not yet in screen_items (B) ───
+    for edge in nav_data.get("edges", []):
+        if str(edge.get("via") or "") not in container_vias:
+            continue
+        dest_class = str(edge.get("to") or "")
+        if not dest_class:
+            continue
+        dest_layout = edge.get("to_layout") or class_to_layout.get(dest_class) or _resolve_layout_from_class(dest_class, nav_data)
+        key = (dest_layout, dest_class)
+        if key not in seen_screens:
+            seen_screens.add(key)
+            if dest_class not in class_to_layout and dest_layout:
+                class_to_layout[dest_class] = dest_layout
+            screen_items.append(key)
+
+    # ── (Step 3) stack container destinations using their host's now-ready ──
+    #           stack (from BFS or from Step 1).
+    for edge in nav_data.get("edges", []):
+        if str(edge.get("via") or "") not in container_vias:
+            continue
+        dest_class = str(edge.get("to") or "")
+        if not dest_class or dest_class in screen_stacks_lookup:
+            continue
+        from_class = str(edge.get("from") or "")
+        if from_class not in screen_stacks_lookup:
+            continue
+        trigger = str(edge.get("trigger") or "")
+        label, elem_tag = _virtual_label(trigger)
+        if not label.strip():
+            dest_layout_for_label = class_to_layout.get(dest_class) or _resolve_layout_from_class(dest_class, nav_data)
+            label = _screen_label(dest_class, dest_layout_for_label)
+        from_layout = class_to_layout.get(from_class) or _resolve_layout_from_class(from_class, nav_data)
+        dest_layout_for_seg = edge.get("to_layout") or class_to_layout.get(dest_class) or _resolve_layout_from_class(dest_class, nav_data)
+        nav_action = _action_segment(
+            layout=from_layout,
+            screen_class=from_class,
+            element_id="",
+            element_tag=elem_tag,
+            interaction="tap",
+            resolved_label=label,
+            trigger=trigger,
+            virtual=True,
+        )
+        screen_stacks_lookup[dest_class] = screen_stacks_lookup[from_class] + [
+            nav_action,
+            _screen_segment(dest_layout_for_seg, dest_class),
+        ]
+
+    # ── (Step 4) anonymous children of now-populated stacks (A) ─────────────
+    # Screens that were NOT reached by BFS but have an inbound edge from a
+    # class that IS now in screen_stacks_lookup (populated by BFS, Step 1, and
+    # Step 3).  The old self-anchor fallback (App > Runtime Entry > Screen)
+    # drops the trigger context; we recover it here so these screens carry the
+    # full host → trigger → target chain.
+    for layout, screen_class in list(screen_items):
+        if screen_class and screen_class in screen_stacks_lookup:
+            continue  # already stacked
+        best_stack = None
+        for edge in nav_data.get("edges", []):
+            if str(edge.get("to") or "") != screen_class:
+                continue
+            from_class = str(edge.get("from") or "")
+            if from_class and from_class in screen_stacks_lookup:
+                trigger = str(edge.get("trigger") or "")
+                label, elem_tag = _virtual_label(trigger)
+                if not label.strip():
+                    label = _screen_label(screen_class, layout)
+                from_layout = class_to_layout.get(from_class) or _resolve_layout_from_class(from_class, nav_data)
+                nav_action = _action_segment(
+                    layout=from_layout,
+                    screen_class=from_class,
+                    element_id="",
+                    element_tag=elem_tag,
+                    interaction="tap",
+                    resolved_label=label,
+                    trigger=trigger,
+                    virtual=True,
+                )
+                stack = screen_stacks_lookup[from_class] + [
+                    nav_action,
+                    _screen_segment(layout, screen_class),
+                ]
+                if best_stack is None or len(stack) < len(best_stack):
+                    best_stack = stack
+        if best_stack is not None:
+            screen_stacks_lookup[screen_class] = best_stack
+
     def _screen_stack(layout: str, screen_class: str) -> list[dict]:
-        if screen_class and screen_class in screen_stacks_by_class:
-            return screen_stacks_by_class[screen_class]
+        # 1. BFS reachable
+        if screen_class and screen_class in screen_stacks_lookup:
+            return screen_stacks_lookup[screen_class]
+        # 2. Inbound context (Case A) — recovered from host screen's stack
         if screen_class:
             return [app_root_seg, runtime_root_seg, _screen_segment(layout, screen_class)]
         return [app_root_seg, unmapped_root_seg, _screen_segment(layout, screen_class)]
@@ -1338,7 +1474,7 @@ def assemble_all_flat_paths(*, include_report: bool = False) -> list[dict] | tup
             unique.append(p)
     if include_report:
         nav_classes = set(nav_data.get("nodes", {}).keys())
-        reachable = set(screen_stacks_by_class.keys())
+        reachable = set(screen_stacks_lookup.keys())
         mapped_layouts = {layout for layout, _class_name in screen_items}
         report = {
             "schema_version": "1.0",
