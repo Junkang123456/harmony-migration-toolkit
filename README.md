@@ -71,6 +71,8 @@ harmony-migration-toolkit/
 - Python 3.10+
 - `pip install -r requirements.txt`
 
+> **tree-sitter (推荐但可选)**: 提供 AST 级源代码解析，用于精确的类继承链检测、Fragment 声明和调用图构建。如果未安装（或解析器加载失败），各提取器将自动降级到正则匹配模式——产出仍然可用，但 Fragment 挂载点、导航节点、调用图等指标会明显偏低。安装命令：`pip install tree-sitter tree-sitter-language-pack`。若确定不需要 AST 精度，可跳过。
+
 ## Usage
 
 ```bash
