@@ -87,6 +87,13 @@ The default full run executes all deterministic stages needed for agent handoff.
 /path/to/android/project/harmony_migration_out/agent_bundle.v1.json
 ```
 
+Stage 0 can also be run standalone (9 sub-steps: XML → source → ground truth → navigation → fragments → dynamic UI → behavior chains → UI DAG → per-screen specs):
+
+```bash
+python bundled_spec_tools/main.py /path/to/android/project --out /path/to/output
+python bundled_spec_tools/main.py /path/to/android/project --out /path/to/output --validate  # with verification report
+```
+
 Detailed reproducible artifacts live under `/path/to/android/project/harmony_migration_out/intermediate/`.
 
 To write output somewhere else, pass `--out`:
