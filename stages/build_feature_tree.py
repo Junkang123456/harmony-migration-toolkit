@@ -323,6 +323,28 @@ def build_feature_tree(
                         "source_path": "",
                     }
 
+    # ── Fill empty layouts for fragment / container nodes ─────────────────────
+    # Fragment destinations from containment edges and anonymous dialog classes
+    # often have no nav-graph node (hence layout="").  Without a layout, downstream
+    # spec-to-screen matching breaks and the node acts as a silent dead-end.
+    # Try, in order: (1) class_layouts from the nav graph, (2) CamelCase→snake_case
+    # conversion (honouring the same convention the old v1 path used).
+    _class_layouts = nav.get("class_layouts") or {}
+    _camel_to_snake = __import__("re").compile(r"(?<=[a-z])(?=[A-Z])")
+    for h in screen_hosts:
+        if screen_hosts[h].get("layout"):
+            continue
+        # (1) explicit class→layout mapping from the nav graph (incl. inflate owner)
+        ly = _class_layouts.get(h) or ""
+        if not ly:
+            # (2) CamelCase → snake_case heuristic (last resort, tagged)
+            ly = _camel_to_snake.sub("_", h).lower()
+        if ly:
+            screen_hosts[h]["layout"] = ly
+            # Keep screen_kind but mark the layout source
+            if screen_hosts[h].get("nav_type") == "other" and not _class_layouts.get(h):
+                screen_hosts[h]["layout_source"] = "name_heuristic"
+
     for sym in sorted(function_symbols, key=lambda s: (str(s.get("class_name") or ""), str(s.get("file") or ""))):
         cls = str(sym.get("class_name") or "").strip()
         if not cls:
