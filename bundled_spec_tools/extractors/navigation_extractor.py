@@ -68,6 +68,14 @@ _SKIP_FN_NAMES = {
 # No app-specific hardcoding — works for any Android project.
 _INFERRED_LAYOUTS: dict = {}
 _ALL_KNOWN_LAYOUTS: set = set()
+# Populated by run() when the router-framework pass runs; holds
+# {edges, route_table, unresolved, stats} so main.py can persist route_table.json.
+_ROUTER_RESULT: dict = {}
+
+
+def get_router_result() -> dict:
+    """Return the last router-framework pass result (route table, unresolved, stats)."""
+    return _ROUTER_RESULT
 
 
 def _scan_all_layouts(project_root: str) -> set:
@@ -908,6 +916,22 @@ def run(project_root: str, dep_roots: list[str] | None = None) -> dict:
                 source, class_name, rel, _find_layout_for_class
             )
         )
+
+    # --- Router framework pass (TheRouter / ARouter / WMRouter) ---
+    # String-route frameworks declare destinations via @Route(path=CONST) and dispatch
+    # via TheRouter.build(CONST).navigation() (often behind wrapper funcs). None of the
+    # direct-mode patterns above match them, so heavily-routed apps produce a nav graph
+    # with ~0 Activity→Activity edges. This pass builds a route table and connects edges.
+    global _ROUTER_RESULT
+    _ROUTER_RESULT = {}
+    try:
+        from extractors import router_table_extractor
+        _ROUTER_RESULT = router_table_extractor.run(
+            project_root, dep_roots, layout_resolver=_find_layout_for_class
+        )
+        all_edges.extend(_ROUTER_RESULT.get("edges", []))
+    except Exception:
+        _ROUTER_RESULT = {}
 
     # --- Fix Point 2: AndroidManifest implicit Intent resolution ---
     action_map = _parse_manifest_intents(project_root)

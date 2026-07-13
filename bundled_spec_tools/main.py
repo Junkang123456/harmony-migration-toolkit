@@ -263,6 +263,29 @@ def main():
     )
     print(f"  推断出的「代码类↔界面文件」对应：{len(nav.get('class_layouts', {}))}")
 
+    # Router-framework pass results (TheRouter/ARouter/WMRouter): persist the route
+    # table + unresolved list, and report how many nav edges came from string routes.
+    _router = navigation_extractor.get_router_result()
+    if _router and _router.get("stats"):
+        rs = _router["stats"]
+        (out_dir / "route_table.json").write_text(
+            json.dumps(_router.get("route_table", {}), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        if _router.get("unresolved"):
+            (out_dir / "router_unresolved.json").write_text(
+                json.dumps(_router["unresolved"], indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        print(
+            f"  字符串路由框架(router)：@Route 声明 {rs.get('route_decl_total', 0)} → "
+            f"解析路由表 {rs.get('route_table_size', 0)}；"
+            f"发起点 {rs.get('call_sites_total', 0)} → 连边 {rs.get('edges_connected', 0)}，"
+            f"运行时未定 {rs.get('unresolved', 0)}"
+        )
+        if rs.get("wrappers_detected"):
+            print(f"    识别封装函数(wrapper)：{rs['wrappers_detected']}")
+
     # Augment class→layout with inflate-site ownership (strongest deterministic
     # signal) — recovers screens that navigation analysis never reaches.
     from extractors.inflate_owner_map import build_inflate_class_layouts, merge_into_nav
@@ -696,6 +719,7 @@ def main():
     for name in ["static_xml.json", "source_findings.json", "ground_truth.json",
                  "function_symbols.json", "call_graph.json",
                  "navigation_graph.json", "navigation_candidates.json",
+                 "route_table.json",
                  "fragments.json",
                  "dynamic_ui.json",
                  "behavior_chains.json",
